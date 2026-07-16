@@ -596,12 +596,28 @@ class Type:
         # We don't usually trust pointers to point to arrays, because it often results
         # in false positives. However, if the pointer is known to point to an array of
         # fixed size, that's something we can believe in.
+        #
+        # We also trust it, even without a known array size, for the specific case of a
+        # pointer-to-pointer (`T **`) accessed at a nonzero multiple of sizeof(T *) with
+        # a matching access width (target_size == size): a "T *" field genuinely holding
+        # an array of T-pointers (`struct Foo **list; ... list[2]`) is a common, safe-to-
+        # assume C idiom, and asking for one whole pointer-sized element at such an
+        # offset has no other coherent interpretation. This is narrower than "any same-
+        # size access is an array": tried relaxing this to any pointee type and it fired
+        # on plain scalar pointers too (e.g. `s32 *x; ... x->unk190`), wrongly turning
+        # legitimate large sub-offset guesses (weird/adversarial pointer arithmetic, not
+        # real arrays) into `x[100]` -- see e2e tests void_pointers/custom_stack, which
+        # exist specifically to pin that `->unkN` fallback naming down. Restricting to
+        # "pointee is itself a pointer" keeps those passing while still fixing the
+        # `T **` case (confirmed against a real PSX target binary, not just a test).
         if array_index != 0:
             known_array_size = self.data().array_dim
-            if (
-                known_array_size is None
-                or array_index < 0
-                or array_index >= known_array_size
+            exact_element_access = (
+                target_size is not None and target_size == size and target.is_pointer()
+            )
+            if array_index < 0 or (
+                not exact_element_access
+                and (known_array_size is None or array_index >= known_array_size)
             ):
                 return self._no_matching_field()
 
