@@ -733,6 +733,41 @@ def handle_shift_right(
             elif expr.op == "*" and rhs % pow2 == 0 and rhs != pow2:
                 mul = BinaryOp.int(expr.left, "*", Literal(value=rhs // pow2))
                 return as_type(mul, tp, silent=False)
+    elif isinstance(shift, Literal) and 0 <= shift.value < 16:
+        # Sign-extend-and-scale idiom, `(x << rhs) >> shift.value` with rhs > shift.value,
+        # generalized to any shift.value -- not just the {16, 24} byte/halfword-boundary
+        # ones the block above requires. Two's-complement algebra makes this exact for ANY
+        # rhs > shift.value >= 0: `(x << rhs) >> shift.value` == sign_extend_{32-rhs}(x) <<
+        # (rhs - shift.value), regardless of what shift.value itself is -- shift.value only
+        # affects the residual scale, never the sign-extension width, which depends solely
+        # on `rhs`. The type is still only assigned (s16/s8) when `rhs` itself lands on a
+        # width our type system can name; the arithmetic is folded either way so the VALUE
+        # stays correct even when it can't be typed. Without this, an index expression like
+        # `((s32)(x << 0x10) >> 0xC)` (rhs=16, shift.value=12 -- sign-extend a 16-bit value,
+        # then scale by 16, a real pattern for a stride-16 array index) fell all the way
+        # through to a bare, untyped `>>`, which is exactly the shape array_access_from_add()
+        # (this file) can't recognize as an array index -- callers then fall back to adding
+        # a raw byte offset to a properly-typed (non-1-byte-stride) pointer, which C's own
+        # pointer arithmetic double-scales. Confirmed exact mechanism on tenchu-decomp's
+        # GetAttackDBID (a stride-16 BattleType[] lookup m2c emitted as an invalid dereference
+        # of a byte-offset-plus-typed-pointer instead of `array[index]`).
+        expr = early_unwrap(lhs)
+        if (
+            isinstance(expr, BinaryOp)
+            and expr.op == "<<"
+            and isinstance(expr.right, Literal)
+        ):
+            rhs = expr.right.value
+            if rhs > shift.value and rhs in (16, 24):
+                tp = (
+                    (Type.s16() if rhs == 16 else Type.s8())
+                    if signed
+                    else (Type.u16() if rhs == 16 else Type.u8())
+                )
+                new_shift = fold_mul_chains(
+                    BinaryOp.int(expr.left, "<<", Literal(rhs - shift.value))
+                )
+                return as_type(new_shift, tp, silent=False)
     if signed:
         return fold_divmod(
             BinaryOp(as_sintish(lhs), ">>", as_intish(shift), type=Type.s32())
@@ -1100,7 +1135,18 @@ def array_access_from_add(
 
     index = addend
     scale = 1
-    uw_addend = early_unwrap(addend)
+    # early_unwrap_ints (not early_unwrap): an index expression can be wrapped in an
+    # int-reinterpret Cast, e.g. `(s16) (var_a0 * 0x10)` -- the exact shape
+    # handle_shift_right's sign-extend-and-scale generalization (this file) now
+    # produces for a `(x << rhs) >> shift` idiom outside the plain byte/halfword-
+    # boundary case. Without peeling that cast off first, `isinstance(uw_addend,
+    # BinaryOp)` never matches, this whole array-index recognizer bails out (returns
+    # None), and callers fall back to raw pointer arithmetic that C's own pointer-
+    # arithmetic auto-scaling then double-scales against a properly-typed (non-1-byte-
+    # stride) base pointer. Same already-established convention as this file's other
+    # early_unwrap_ints uses (see fold_divmod above) -- ignoring an int cast doesn't
+    # change the value being pattern-matched, only its declared type.
+    uw_addend = early_unwrap_ints(addend)
     if (
         isinstance(uw_addend, BinaryOp)
         and uw_addend.op in ("*", "<<")
