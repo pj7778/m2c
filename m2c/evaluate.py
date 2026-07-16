@@ -740,7 +740,12 @@ def handle_shift_right(
         # width (which depends solely on `rhs`) lands on a type we can name (s16/s8).
         # Two's-complement algebra makes the rewrite exact: `(x << rhs) >> shift.value`
         # == sign_extend_{32-rhs}(x) << (rhs - shift.value) -- shift.value only affects
-        # the residual scale. Without this, an index expression like
+        # the residual scale. Emission order matters: the cast must wrap the INNER
+        # value and the shift apply to the cast result -- `(s16) x << (rhs - k)`, an
+        # s32-valued expression. Casting AFTER the shift (`(s16)(x << (rhs - k))`, the
+        # construct the {16, 24} block reuses) truncates the scaled value to 16/8 bits,
+        # which is only lossless when the cast width equals 32 - outer-shift -- never
+        # true in this branch. Without this fold, an index expression like
         # `((s32)(x << 0x10) >> 0xC)` (rhs=16, shift.value=12 -- sign-extend a 16-bit value,
         # then scale by 16, a real pattern for a stride-16 array index) fell all the way
         # through to a bare, untyped `>>`, which is exactly the shape array_access_from_add()
@@ -762,10 +767,13 @@ def handle_shift_right(
                     if signed
                     else (Type.u16() if rhs == 16 else Type.u8())
                 )
-                new_shift = fold_mul_chains(
-                    BinaryOp.int(expr.left, "<<", Literal(rhs - shift.value))
+                return fold_mul_chains(
+                    BinaryOp.int(
+                        as_type(expr.left, tp, silent=False),
+                        "<<",
+                        Literal(rhs - shift.value),
+                    )
                 )
-                return as_type(new_shift, tp, silent=False)
     if signed:
         return fold_divmod(
             BinaryOp(as_sintish(lhs), ">>", as_intish(shift), type=Type.s32())
