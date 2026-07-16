@@ -172,6 +172,7 @@ class Options:
     reg_vars: List[str]
     input_regs: List[str]
     gp_base: Optional[int]
+    elide_context_struct_decls: bool
     annotate: FrozenSet[str]
     goto_patterns: List[str]
     stop_on_error: bool

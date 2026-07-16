@@ -114,7 +114,12 @@ class TypePool:
             ), f"Duplicate tag: {tag_name}"
             self.structs_by_tag_name[tag_name] = struct
 
-    def format_type_declarations(self, fmt: Formatter, stack_structs: bool) -> str:
+    def format_type_declarations(
+        self,
+        fmt: Formatter,
+        stack_structs: bool,
+        elide_context_redecls: bool = False,
+    ) -> str:
         decls = []
         for struct in sorted(
             self.structs, key=lambda s: s.tag_name or s.typedef_name or ""
@@ -124,6 +129,17 @@ class TypePool:
                 continue
             # Include any struct with added fields, plus any stack structs
             if any(not f.known for f in struct.fields) or struct.is_stack:
+                # A struct that came from --context already has a full body in
+                # the context header. Re-printing it (to show a discovered
+                # field) is a duplicate definition if the output is compiled
+                # with that header included. Under this flag, keep the context
+                # body authoritative and emit a one-line note of the discovered
+                # fields instead, so the signal isn't lost.
+                if elide_context_redecls and struct.from_context and not struct.is_stack:
+                    note = struct.format_discovered_fields_comment(fmt)
+                    if note:
+                        decls.append(note + "\n")
+                    continue
                 decls.append(struct.format(fmt) + "\n")
         return "\n".join(decls)
 
@@ -1346,6 +1362,7 @@ class StructDeclaration:
     has_bitfields: bool = False
     is_union: bool = False
     is_stack: bool = False
+    from_context: bool = False
     preferred_union_field: Optional[str] = None
 
     def min_size(self) -> int:
@@ -1547,6 +1564,22 @@ class StructDeclaration:
                 if not any(f.name == name for f in self.fields):
                     field.name = name
 
+    def format_discovered_fields_comment(self, fmt: Formatter) -> str:
+        """Return a one-line C comment listing the fields m2c inferred beyond
+        this (context-supplied) struct's known body, or "" if there are none.
+        Used in place of re-printing the whole struct when its context body is
+        kept authoritative (see format_type_declarations)."""
+        inferred = [f for f in self.fields if not f.known]
+        if not inferred:
+            return ""
+        keyword = "union" if self.is_union else "struct"
+        name = self.tag_name or self.typedef_name or "<anonymous>"
+        parts = [
+            f"{f.type.to_decl(f.name, fmt).strip()} @ 0x{fmt.format_hex(f.offset)}"
+            for f in inferred
+        ]
+        return f"/* m2c inferred field(s) in {keyword} {name}: {'; '.join(parts)} */"
+
     def format(self, fmt: Formatter) -> str:
         """
         Return the C representation of the struct/union.
@@ -1709,6 +1742,7 @@ class StructDeclaration:
             bitfields=[],
             has_bitfields=struct_has_bitfields,
             is_union=isinstance(ctype, ca.Union),
+            from_context=True,
             new_field_prefix=typepool.unknown_field_prefix,
             preferred_union_field=preferred_field,
         )

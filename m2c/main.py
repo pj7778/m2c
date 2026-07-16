@@ -263,7 +263,9 @@ def run(options: Options) -> int:
     return_code = 0
     try:
         type_decls = typepool.format_type_declarations(
-            fmt, stack_structs=options.print_stack_structs
+            fmt,
+            stack_structs=options.print_stack_structs,
+            elide_context_redecls=options.elide_context_struct_decls,
         )
         if type_decls:
             print(type_decls)
@@ -396,6 +398,17 @@ def parse_flags(flags: List[str]) -> Options:
         help=(
             "Include template structs for each function's stack. These can be modified and passed back "
             "into m2c with --context to set the types & names of stack vars."
+        ),
+    )
+    group.add_argument(
+        "--elide-context-struct-decls",
+        dest="elide_context_struct_decls",
+        action="store_true",
+        help=(
+            "Do not re-print the full body of a --context struct when analysis "
+            "discovers a new field; emit a one-line comment listing the "
+            "discovered fields instead. Avoids a duplicate-definition error when "
+            "the output is compiled with the same context struct headers included."
         ),
     )
     group.add_argument(
@@ -799,6 +812,7 @@ def parse_flags(flags: List[str]) -> Options:
         global_decls=args.global_decls,
         target=args.target,
         print_stack_structs=args.print_stack_structs,
+        elide_context_struct_decls=args.elide_context_struct_decls,
         unk_inference=args.unk_inference,
         stack_spill_detection=args.stack_spill_detection,
         passes=args.passes,
