@@ -15,6 +15,8 @@ s32 test(s32 arg0) {
             case 2: // switch 1
                 var_r2 = 1;
                 goto block_21;
+            case 3: // switch 1
+                goto block_21;
             case -50: // switch 1
                 var_r2 -= 1;
                 goto block_28;
@@ -23,7 +25,6 @@ s32 test(s32 arg0) {
             switch (var_r2) { // switch 2; irregular
             case 0xC8: // switch 2
             case 0x65: // switch 2
-            case 3: // switch 1
 block_21:
                 return (var_r2 + 1) ^ var_r2;
             case 0x6B: // switch 2

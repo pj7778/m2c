@@ -13,6 +13,7 @@ from typing import (
     Union,
 )
 
+from .error import DecompFailure
 from .flow_graph import (
     BasicNode,
     ConditionalNode,
@@ -1075,6 +1076,20 @@ def emit_return(context: Context, node: ReturnNode, body: Body) -> None:
         body.add_statement(SimpleStatement("return;", is_jump=True))
 
 
+def _case_label_for_switch(context: Context, node: Node, switch_index: SwitchIndex) -> str:
+    """Look up the case-label text this specific switch registered for `node` via
+    add_labels_for_switch. Every node reachable here as a `case` of `switch_index`
+    must have exactly one such registration (it's how it became a case in the
+    first place), so absence would be an internal inconsistency, not a normal
+    "not found" case -- fail loudly rather than silently synthesizing a label."""
+    for idx, label in context.case_nodes[node]:
+        if idx == switch_index:
+            return label
+    raise DecompFailure(
+        f"switch {switch_index}: no case label registered for a node in its own case list"
+    )
+
+
 def build_switch_statement(
     context: Context,
     jump: SwitchControl,
@@ -1089,22 +1104,40 @@ def build_switch_statement(
     """
     switch_body = Body(print_node_comment=context.options.debug)
 
-    # NOTE: a case target that's already in context.emitted_nodes by the time this
-    # loop reaches it (see the `pass` branch below) can end up emitted OUTSIDE this
-    # switch's lexical braces, in which case add_labels_for_switch's case-label
-    # attachment produces invalid C ("case label not within a switch statement" --
-    # confirmed on tenchu-decomp's ActMOVE, a real jump-table-entry-aliases-an-
-    # ordinary-branch-target case). A fix was attempted here (tag it via emission
-    # order + a nodes_emitted_by_switch set, and explicitly emit `case N: goto
-    # ...;` when the target was emitted via non-switch flow) but caused real
-    # regressions in legitimate multi-switch/nested-if-within-switch sharing
-    # patterns (m2c's own multi-switch/switch-different-block test cases) that a
-    # purely emission-order-based heuristic can't cleanly distinguish from the
-    # genuine bug -- doing this correctly needs a real graph-topology check (is
-    # `case` structurally reachable within the region build_switch_statement is
-    # responsible for, not just "was it emitted before this call started").
-    # Reverted rather than ship a known regression; the bug itself is real and
-    # accurately diagnosed above, just not yet safely fixed.
+    # A case target that's already in context.emitted_nodes by the time this loop
+    # reaches it can end up emitted OUTSIDE this switch's lexical braces, in which
+    # case add_labels_for_switch's case-label attachment produces invalid C ("case
+    # label not within a switch statement" -- confirmed on tenchu-decomp's ActMOVE,
+    # a real jump-table-entry-aliases-an-ordinary-branch-target case).
+    #
+    # A first fix attempt tagged this via emission ORDER (a snapshot taken before
+    # this whole function was called, plus a nodes_emitted_by_switch set) but that
+    # caused real regressions in m2c's own multi-switch/switch-different-block
+    # tests: a case label CAN validly sit inside an if/else that's itself lexically
+    # within this same switch's braces (Duff's-device-style sharing), and emission
+    # order alone can't distinguish "emitted earlier, but still inside this switch"
+    # from "emitted entirely outside this switch, before it even started."
+    #
+    # The right containment predicate is "emitted during THIS build_switch_statement
+    # call, including recursion": build_flowgraph_between (called below, for this
+    # switch's own cases) recursively emits any nested if/switch content as part of
+    # building THIS switch's body, so a snapshot of context.emitted_nodes taken
+    # right here -- immediately before this loop starts touching any case -- is
+    # exactly the "before" state; anything added to context.emitted_nodes AFTER this
+    # point happened because THIS switch's own body-building put it there, and is
+    # therefore genuinely lexically contained. Only a case already present in the
+    # snapshot is truly foreign.
+    #
+    # For a genuinely foreign case, emit `case N: goto <label>;` here (always valid
+    # C, regardless of where the real body ends up) and unregister the
+    # (switch_index, case_label) pair from context.case_nodes[case] so the foreign
+    # site's own LabelStatement doesn't ALSO print `case N:` there when it's finally
+    # rendered (double emission) -- that would still be invalid C at the foreign
+    # site (or a straight-up duplicate label if it's valid there), just a different
+    # shape of the same bug. emit_goto() takes care of registering the plain goto
+    # target label (context.goto_nodes) so the foreign site prints a normal
+    # `block_N:`/`loop_N:` label our goto can jump to.
+    already_emitted_before_switch = set(context.emitted_nodes)
 
     # If there are any case labels to jump to the `end` node immediately after the
     # switch block, emit them as `case ...: break;` at the start of the switch block
@@ -1131,7 +1164,30 @@ def build_switch_statement(
     next_sorted_cases.extend(sorted_cases[1:])
     next_sorted_cases.append(None)
     for case, next_case in zip(sorted_cases, next_sorted_cases):
-        if case in context.emitted_nodes or case is end:
+        if case is end:
+            pass
+        elif case in already_emitted_before_switch:
+            # Genuinely foreign: this case's real body was fully emitted before
+            # this switch's own body-building ever started (e.g. an ordinary
+            # if/else branch elsewhere in the function that happens to alias one
+            # of this switch's jump-table entries). Emit a goto stub instead of
+            # letting the (invalid, elsewhere-placed) case label stand alone.
+            case_label = _case_label_for_switch(context, case, switch_index)
+            comments = [lambda fmt: switch_index.to_comment(fmt)]
+            switch_body.add_statement(
+                SimpleStatement(f"{case_label}:", comments=comments, indent=-1)
+            )
+            emit_goto(context, case, switch_body)
+            context.case_nodes[case] = [
+                (idx, lbl)
+                for idx, lbl in context.case_nodes[case]
+                if idx != switch_index
+            ]
+        elif case in context.emitted_nodes:
+            # Emitted earlier, but AFTER this switch's own body-building began --
+            # i.e. by this same switch's own recursive processing of an earlier
+            # case (nested if/switch content, or a fallthrough chain). Still
+            # lexically within this switch's braces; nothing more to do here.
             pass
         elif (
             next_case is not None

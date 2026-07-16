@@ -13,6 +13,8 @@ s32 test(s32 arg0) {
                 var_r3 -= 1;
                 // Duplicate return node #23. Try simplifying control flow for better match
                 return var_r3 ^ (var_r3 + 1);
+            case 3: // switch 1
+                goto block_23;
             case -50: // switch 1
                 var_r3 -= 1;
                 // Duplicate return node #31. Try simplifying control flow for better match
@@ -26,7 +28,7 @@ s32 test(s32 arg0) {
             switch (var_r3) { // switch 2; irregular
             case 0xC8: // switch 2
             case 0x65: // switch 2
-            case 3: // switch 1
+block_23:
                 return var_r3 ^ (var_r3 + 1);
             case 0x6B: // switch 2
                 var_r3 += 1;

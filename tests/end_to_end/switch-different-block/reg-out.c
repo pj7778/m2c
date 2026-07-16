@@ -25,9 +25,11 @@ s32 test(s32 arg0) {
             /* Duplicate return node #9. Try simplifying control flow for better match */
             D_410170 = var_a0_2;
             return 2;
+        case 5:
+            goto block_8;
         }
     } else {
-    case 5:
+block_8:
         var_a0_2 = var_a0 / 2;
         D_410170 = var_a0_2;
         return 2;
