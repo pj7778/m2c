@@ -1356,9 +1356,33 @@ class CommaConditionExpr(Condition):
         return CommaConditionExpr(self.statements, self.condition.negated())
 
     def format(self, fmt: Formatter) -> str:
+        # write_statement() (this file) pushes a standalone CommentStmt ahead of
+        # every real statement when --annotate=source is active, one per source
+        # instruction -- fine when each stands alone on its own physical line
+        # (the normal case), but every statement in `self.statements` gets joined
+        # onto ONE physical line below. CommentStmt.format() hardcodes a `// `
+        # prefix unconditionally (unlike CommentExpr, which correctly switches to
+        # `/* */` -- see its format() a few classes up), so a `//`-commented
+        # instruction annotation here silently swallows every later joined
+        # statement's real code AND the trailing condition as a comment,
+        # corrupting the emitted C ("case label not within switch"/parse-error/
+        # undeclared-identifier cascades were all downstream symptoms of this --
+        # confirmed on tenchu-decomp's ActMOVE). Even under `/* */` style this
+        # embedding position reads poorly (multiple per-instruction comments
+        # crammed into one boolean condition), so drop CommentStmts entirely here
+        # rather than reformat them -- they're purely a debug aid with no
+        # semantic content to preserve.
         comma_joined = ", ".join(
-            stmt.format(fmt).rstrip(";") for stmt in self.statements
+            stmt.format(fmt).rstrip(";")
+            for stmt in self.statements
+            if not isinstance(stmt, CommentStmt)
         )
+        # If every statement was a CommentStmt (dropped above), comma_joined is
+        # empty -- omit it entirely rather than emit a stray leading comma with
+        # no left operand ("(, cond)", invalid C; the comma operator needs both
+        # sides).
+        if not comma_joined:
+            return f"({self.condition.format(fmt)})"
         return f"({comma_joined}, {self.condition.format(fmt)})"
 
 
@@ -2239,7 +2263,18 @@ class CommentStmt(Statement):
         return True
 
     def format(self, fmt: Formatter) -> str:
-        return f"// {self.contents}"
+        # Match CommentExpr's convention (a few classes up) rather than
+        # hardcoding `//` unconditionally: a `//`-style comment is only safe
+        # when nothing else follows it on the same physical line, which isn't
+        # guaranteed for every position a Statement can end up embedded in (see
+        # CommaConditionExpr.format(), which additionally drops CommentStmts
+        # entirely rather than relying on this style switch, since even a block
+        # comment reads poorly crammed into a one-line boolean condition).
+        if fmt.coding_style.comment_style == CodingStyle.CommentStyle.NONE:
+            return ""
+        if fmt.coding_style.comment_style == CodingStyle.CommentStyle.ONELINE:
+            return f"// {self.contents}"
+        return f"/* {self.contents} */"
 
 
 @dataclass(frozen=True)

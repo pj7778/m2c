@@ -1089,6 +1089,23 @@ def build_switch_statement(
     """
     switch_body = Body(print_node_comment=context.options.debug)
 
+    # NOTE: a case target that's already in context.emitted_nodes by the time this
+    # loop reaches it (see the `pass` branch below) can end up emitted OUTSIDE this
+    # switch's lexical braces, in which case add_labels_for_switch's case-label
+    # attachment produces invalid C ("case label not within a switch statement" --
+    # confirmed on tenchu-decomp's ActMOVE, a real jump-table-entry-aliases-an-
+    # ordinary-branch-target case). A fix was attempted here (tag it via emission
+    # order + a nodes_emitted_by_switch set, and explicitly emit `case N: goto
+    # ...;` when the target was emitted via non-switch flow) but caused real
+    # regressions in legitimate multi-switch/nested-if-within-switch sharing
+    # patterns (m2c's own multi-switch/switch-different-block test cases) that a
+    # purely emission-order-based heuristic can't cleanly distinguish from the
+    # genuine bug -- doing this correctly needs a real graph-topology check (is
+    # `case` structurally reachable within the region build_switch_statement is
+    # responsible for, not just "was it emitted before this call started").
+    # Reverted rather than ship a known regression; the bug itself is real and
+    # accurately diagnosed above, just not yet safely fixed.
+
     # If there are any case labels to jump to the `end` node immediately after the
     # switch block, emit them as `case ...: break;` at the start of the switch block
     # instead. This avoids having "dangling" `case ...:` labels outside of the block.

@@ -1,3 +1,3 @@
 void test(void) {
-    // COP0: rfe
+    /* COP0: rfe */
 }
