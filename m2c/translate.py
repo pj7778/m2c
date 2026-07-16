@@ -503,7 +503,20 @@ class StackInfo:
             if store:
                 self.weak_stack_var_types[location] = field_type
 
-            return LocalVar(location, type=field_type, path=field_path)
+            ret = LocalVar(location, type=field_type, path=field_path)
+            if not store:
+                # A load from a stack slot with no store anywhere in the
+                # function still references a real local -- most commonly an
+                # out-parameter array written by a callee (e.g. GetSpline
+                # writing 3 halfwords through its s16* arg, then the caller
+                # reading sp10/sp12/sp14). Stores register their LocalVar via
+                # add_local_var in the store handler; loads never did, so a
+                # read-only slot appeared in the output as an UNDECLARED spNN
+                # identifier (confirmed: tenchu-decomp ActiveMotion,
+                # missing-stack-var-decl class). Declaring it as a plain
+                # (uninitialized) local matches the documented hand-fix.
+                self.add_local_var(ret)
+            return ret
 
     def maybe_get_register_var(self, reg: Register) -> Optional[Var]:
         return self.reg_vars.get(reg)
