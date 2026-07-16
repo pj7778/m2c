@@ -49,6 +49,7 @@ from .translate import (
     CmpInstrMap,
     CommentStmt,
     ErrorExpr,
+    GteReadExpr,
     ExprStmt,
     Expression,
     InstrArgs,
@@ -1158,17 +1159,19 @@ class MipsArch(Arch):
             assert len(args) == 2 and isinstance(args[0], Register)
             outputs = [args[0]]
             eval_fn = lambda s, a: s.set_reg(
-                a.reg_ref(0), ErrorExpr(f"mfc0 {a.raw_arg(1)}")
+                a.reg_ref(0),
+                GteReadExpr(mnemonic="mfc0", reg=str(a.raw_arg(1)).lstrip("$"), type=Type.s32(), cop="COP0"),
             )
         elif mnemonic == "mtc0":
             assert len(args) == 2 and isinstance(args[0], Register)
             inputs = [args[0]]
-            eval_fn = lambda s, a: s.write_statement(error_stmt(instr_str))
+            eval_fn = lambda s, a: s.write_statement(CommentStmt(f"COP0: {instr_str}"))
         elif mnemonic in cls.instrs_cop2_write_gpr:
             assert len(args) >= 1 and isinstance(args[0], Register)
             outputs = [args[0]]
-            eval_fn = lambda s, a: s.set_reg(
-                a.reg_ref(0), ErrorExpr(f"GTE_{mnemonic}({a.raw_arg(1)})")
+            eval_fn = lambda s, a, mn=mnemonic: s.set_reg(
+                a.reg_ref(0),
+                GteReadExpr(mnemonic=mn, reg=str(a.raw_arg(1)).lstrip("$"), type=Type.s32()),
             )
         elif mnemonic in cls.instrs_cop2_comment:
             inputs = [r for r in args if isinstance(r, Register)]
@@ -1455,6 +1458,9 @@ class MipsArch(Arch):
         ),
         "break": lambda a: void_fn_op(
             "M2C_BREAK", [a.s16_imm(0)] if a.count() >= 1 else []
+        ),
+        "syscall": lambda a: void_fn_op(
+            "M2C_SYSCALL", [a.s16_imm(0)] if a.count() >= 1 else []
         ),
         "sync": lambda a: void_fn_op("M2C_SYNC", []),
         "trapuv.fictive": lambda a: CommentStmt("code compiled with -trapuv"),
@@ -2235,7 +2241,7 @@ class MipsPsxArch(MipsArch):
     instrs_cop2_comment: Set[str] = {
         "mtc2", "ctc2", "lwc2", "swc2",
         "cop2", "nclip", "rtps", "rtpt", "mvmva",
-        "ncds", "ncdt", "nccs", "nct", "ncs", "ncc",
+        "ncds", "ncdt", "nccs", "ncct", "nct", "ncs", "ncc",
         "dpcs", "dpct", "intpl", "cdp", "cc",
         "avsz3", "avsz4", "sqr", "dcpl", "op", "gpf", "gpl",
     }

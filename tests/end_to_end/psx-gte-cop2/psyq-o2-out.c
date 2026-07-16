@@ -5,5 +5,5 @@ s32 test(void) {
     // GTE: nclip
     // GTE: avsz3
     // GTE: swc2 $16, ($a1)
-    return M2C_ERROR(/* GTE_cfc2($31) */);
+    return GTE_CFC2(31);
 }

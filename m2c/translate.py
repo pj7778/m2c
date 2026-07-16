@@ -929,6 +929,21 @@ class ErrorExpr(Condition):
         return "M2C_ERROR()"
 
 
+@dataclass(frozen=True, eq=False)
+class GteReadExpr(Expression):
+    """Read from a COP register — emits GTE_MFC2(n), COP0_MFC0(n), etc."""
+    mnemonic: str
+    reg: str
+    type: Type = field(compare=False)
+    cop: str = "GTE"
+
+    def dependencies(self) -> List[Expression]:
+        return []
+
+    def format(self, fmt: Formatter) -> str:
+        return f"{self.cop}_{self.mnemonic.upper()}({self.reg})"
+
+
 @dataclass(frozen=True)
 class CommentExpr(Expression):
     expr: Expression
