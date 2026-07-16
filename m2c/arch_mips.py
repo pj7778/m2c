@@ -1126,8 +1126,14 @@ class MipsArch(Arch):
             "bgtz",
             "blez",
             "bltz",
+            "bltzal",
+            "bgezal",
             "bc1t",
             "bc1f",
+            "bc0t",
+            "bc0f",
+            "bc2t",
+            "bc2f",
         ):
             # Normal branch
             if mnemonic in ("beq", "bne"):
@@ -1137,7 +1143,7 @@ class MipsArch(Arch):
                     and isinstance(args[1], Register)
                 )
                 inputs = [args[0], args[1]]
-            elif mnemonic in ("bc1t", "bc1f"):
+            elif mnemonic in ("bc1t", "bc1f", "bc0t", "bc0f", "bc2t", "bc2f"):
                 assert len(args) == 1
                 inputs = [Register("condition_bit")]
             else:
@@ -1146,11 +1152,15 @@ class MipsArch(Arch):
             jump_target = get_jump_target(args[-1])
             has_delay_slot = True
             is_conditional = True
+            # bltzal/bgezal always place the return address in $ra, whether or
+            # not the branch is taken (confirmed: psx-spx CPU Jump Opcodes).
+            if mnemonic in ("bltzal", "bgezal"):
+                outputs = [Register("ra")]
 
             def eval_fn(s: NodeState, a: InstrArgs) -> None:
-                if mnemonic in ("bc1t", "bc1f"):
+                if mnemonic in ("bc1t", "bc1f", "bc0t", "bc0f", "bc2t", "bc2f"):
                     cond = condition_from_expr(a.regs[Register("condition_bit")])
-                    if mnemonic == "bc1f":
+                    if mnemonic in ("bc1f", "bc0f", "bc2f"):
                         cond = cond.negated()
                 else:
                     cond = cls.instrs_branches[mnemonic](a)
@@ -1446,6 +1456,11 @@ class MipsArch(Arch):
         "bgtz": lambda a: BinaryOp.scmp(a.reg(0), ">", Literal(0)),
         "bltz": lambda a: handle_bgez(a).negated(),
         "bgez": lambda a: handle_bgez(a),
+        # Same branch condition as bltz/bgez; the "and-link" part (always
+        # setting $ra) is handled by the outputs=[Register("ra")] special
+        # case in the branch-dispatch block above, not here.
+        "bltzal": lambda a: handle_bgez(a).negated(),
+        "bgezal": lambda a: handle_bgez(a),
     }
     instrs_no_dest: StmtInstrMap = {
         # Conditional traps (happen with Pascal code sometimes, might as well give a nicer
