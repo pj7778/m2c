@@ -41,6 +41,7 @@ from .translate import (
     Lwl,
     Lwr,
     NodeState,
+    PassedInArg,
     RawSymbolRef,
     RegExpression,
     RegInfo,
@@ -100,6 +101,26 @@ def deref(
 
     # Handle large struct offsets or *(x + offset).
     uw_var = early_unwrap(var)
+    if (
+        isinstance(uw_var, AddressOf)
+        and isinstance(uw_var.expr, PassedInArg)
+        and uw_var.expr.loc.reg is None
+        and offset < 0
+    ):
+        # `&argN` (a stack-passed incoming argument's address, which is only ever
+        # computed as "$sp + allocated_stack_size + home-space offset") dereferenced
+        # at a *negative* additional offset can't be a real read of the argument
+        # itself, which only extends forward from that address. This happens when a
+        # large-frame prologue recomputes the pre-adjustment $sp in a temp register
+        # (see get_stack_info's `mips:addu`/sp_alias_regs handling) to reach back
+        # into this function's own frame with a small, encodable offset -- resolve
+        # it at the correct absolute stack location instead of treating it as an
+        # argument field access.
+        arg_loc = uw_var.expr.loc
+        assert arg_loc.offset is not None
+        return stack_info.get_stack_var(
+            stack_info.allocated_stack_size + arg_loc.offset + offset, store=store
+        )
     if isinstance(uw_var, BinaryOp) and uw_var.op == "+":
         for base, addend in [(uw_var.left, uw_var.right), (uw_var.right, uw_var.left)]:
             arch = stack_info.global_info.arch

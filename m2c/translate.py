@@ -14,6 +14,7 @@ from typing import (
     Callable,
     DefaultDict,
     Dict,
+    FrozenSet,
     Iterator,
     List,
     Mapping,
@@ -43,6 +44,7 @@ from .flow_graph import (
     locs_clobbered_until_dominator,
 )
 from .ir_pattern import IrPattern, simplify_ir_patterns
+from .source_annotate import format_source_annotation
 from .options import CodingStyle, Formatter, Options, Target
 from .asm_file import AsmData, AsmDataEntry, AsmSymbolicData
 from .asm_instruction import (
@@ -600,6 +602,12 @@ def get_stack_info(
     # Track simple literal values stored into registers: MIPS compilers need a temp
     # reg to move the stack pointer more than 0x7FFF bytes.
     temp_reg_values: Dict[Register, int] = {}
+    # Track registers recomputed as "$sp + <known constant>" (see the `mips:addu`
+    # case below): GCC's large-frame prologues reuse the same constant that moved
+    # $sp to also recompute the pre-adjustment $sp in a fresh register, so that the
+    # callee-save stores that follow can use small, encodable offsets from *that*
+    # register instead of an offset from $sp that's too big to fit in 16 bits.
+    sp_alias_regs: Dict[Register, int] = {}
     for inst in flow_graph.entry_node().block.instructions:
         arch_mnemonic = inst.arch_mnemonic(arch)
         if inst.function_target:
@@ -619,6 +627,28 @@ def get_stack_info(
             # same way that `addiu $sp, $sp, N` is ignored in handle_addi_real
             assert isinstance(inst.args[2], Register)
             info.allocated_stack_size = temp_reg_values[inst.args[2]]
+        elif (
+            arch_mnemonic == "mips:addu"
+            and isinstance(inst.args[0], Register)
+            and inst.args[0] != arch.stack_pointer_reg
+            and isinstance(inst.args[1], Register)
+            and isinstance(inst.args[2], Register)
+            and (
+                (
+                    inst.args[1] == arch.stack_pointer_reg
+                    and temp_reg_values.get(inst.args[2]) == info.allocated_stack_size
+                )
+                or (
+                    inst.args[2] == arch.stack_pointer_reg
+                    and temp_reg_values.get(inst.args[1]) == info.allocated_stack_size
+                )
+            )
+        ):
+            # Recomputing the pre-adjustment $sp (see comment on sp_alias_regs above).
+            # Only recognized once `subu $sp, $sp, temp` (the case above) has already
+            # established that `temp` holds exactly this function's frame size --
+            # that's what distinguishes this from an unrelated `$reg = $sp + N`.
+            sp_alias_regs[inst.args[0]] = info.allocated_stack_size
         elif arch_mnemonic == "ppc:stwu" and inst.args[0] == arch.stack_pointer_reg:
             # Moving the stack pointer on PPC
             assert isinstance(inst.args[1], AsmAddressMode)
@@ -697,6 +727,27 @@ def get_stack_info(
                     if arch_mnemonic == "mips:swc1":
                         # Similarly, they use swc1 but reserve 8 bytes of space.
                         allowed_callee_save_gaps.add(stack_offset + 4)
+        elif (
+            arch_mnemonic in ("mips:sw", "mips:swc1")
+            and isinstance(inst.args[0], Register)
+            and inst.args[0] in arch.saved_regs
+            and isinstance(inst.args[1], AsmAddressMode)
+            and inst.args[1].base in sp_alias_regs
+            and isinstance(inst.args[1].addend, AsmLiteral)
+            and inst.args[0] not in info.callee_save_regs
+        ):
+            # Same as the $sp-based case above, but through a register recognized by
+            # the `mips:addu` case as a known-constant offset from $sp. `make_memory_access`
+            # (arch_mips.py) only turns literal $sp accesses into StackLocations, so this
+            # can't go through the inputs/outputs matching above -- translate the address
+            # mode's raw offset back to an ordinary $sp-relative one here instead.
+            if inst.args[0] == arch.return_address_reg:
+                info.is_leaf = False
+            stack_offset = sp_alias_regs[inst.args[1].base] + inst.args[1].addend.value
+            info.callee_save_regs.add(inst.args[0])
+            callee_saved_offsets.append(stack_offset)
+            if arch_mnemonic == "mips:swc1":
+                allowed_callee_save_gaps.add(stack_offset + 4)
         elif arch_mnemonic == "ppc:mflr" and inst.args[0] == Register("r0"):
             info.is_leaf = False
         elif arch_mnemonic == "mips:li" and inst.args[0] in arch.temp_regs:
@@ -3696,6 +3747,17 @@ class NodeState:
             self.switch_control = SwitchControl.from_expr(expr, len(self.node.cases))
 
     def write_statement(self, stmt: Statement) -> None:
+        if "source" in self.regs.stack_info.global_info.annotate and self.regs.has_current_instr():
+            annotation = format_source_annotation(self.regs.current_instr_ref())
+            if annotation is not None:
+                # format_source_annotation returns a ready-made `/* ... */`
+                # block comment (matching m2c's own error-message style, per
+                # its docstring/tests) -- strip that wrapper here so
+                # CommentStmt's own `// ` prefix doesn't double up into
+                # `// /* ... */`.
+                self.to_write.append(
+                    CommentStmt(annotation.removeprefix("/* ").removesuffix(" */"))
+                )
         self.to_write.append(stmt)
 
     def store_memory(self, store: StoreStmt, reg: Register) -> None:
@@ -4007,7 +4069,29 @@ def create_dominated_node_state(
     """
     stack_info = parent_state.stack_info
     new_regs = RegInfo(stack_info=stack_info)
-    child_state = NodeState(node=child, regs=new_regs, stack_info=stack_info)
+    clobbered_locs = locs_clobbered_until_dominator(child)
+
+    # Inherit any not-yet-consumed stack-passed call arguments from the immediate
+    # dominator. This covers e.g. an outgoing-argument store that GCC hoisted into
+    # a branch delay slot (or otherwise scheduled earlier) in `parent_state.node`,
+    # which then reaches `child` (a call site) along every path unclobbered.
+    # `clobbered_locs` already includes StackLocations written on any path between
+    # the dominator and `child` (not just `parent_state.node` itself), so only
+    # slots proven untouched along *every* such path are carried forward; anything
+    # else is left alone; the ordinary same-block lookup (and its ErrorExpr
+    # fallback) is unaffected, so ambiguous cases still error out exactly as before.
+    inherited_subroutine_args: Dict[int, Expression] = {
+        offset: expr
+        for offset, expr in parent_state.subroutine_args.items()
+        if StackLocation(offset=offset, symbolic_offset=None) not in clobbered_locs
+    }
+
+    child_state = NodeState(
+        node=child,
+        regs=new_regs,
+        stack_info=stack_info,
+        subroutine_args=inherited_subroutine_args,
+    )
     for reg, data in parent_state.regs.contents.items():
         new_regs.global_set_with_meta(
             reg,
@@ -4015,9 +4099,7 @@ def create_dominated_node_state(
             RegMeta(inherited=True, force=data.meta.force, initial=data.meta.initial),
         )
 
-    phi_regs = (
-        r for r in locs_clobbered_until_dominator(child) if isinstance(r, Register)
-    )
+    phi_regs = (r for r in clobbered_locs if isinstance(r, Register))
     for reg in phi_regs:
         sources, uses_dominator = reg_sources(child, reg)
 
@@ -4220,6 +4302,7 @@ class GlobalInfo:
     typepool: TypePool
     deterministic_vars: bool
     stack_spill_detection: bool
+    annotate: FrozenSet[str] = frozenset()
     global_symbol_map: Dict[str, GlobalSymbol] = field(default_factory=dict)
     persistent_function_state: Dict[str, PersistentFunctionState] = field(
         default_factory=lambda: defaultdict(PersistentFunctionState)

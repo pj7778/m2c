@@ -3,7 +3,7 @@ import contextlib
 from dataclasses import dataclass
 import enum
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Union
+from typing import Dict, FrozenSet, Iterator, List, Optional, Union
 
 from .error import assert_never
 
@@ -171,6 +171,7 @@ class Options:
     heuristic_strings: bool
     reg_vars: List[str]
     input_regs: List[str]
+    annotate: FrozenSet[str]
     goto_patterns: List[str]
     stop_on_error: bool
     print_assembly: bool

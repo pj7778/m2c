@@ -39,6 +39,12 @@ class DecompilationState:
     function: Function
     state: Union[Valid, Exception]
 
+# Every valid --annotate kind. A single canonical set so a typo (or a kind
+# whose producer hasn't landed yet) is a clear error at parse time instead of
+# silently doing nothing -- add the new string here the same commit that adds
+# its producer (see source_annotate.py for "source"'s).
+ANNOTATION_KINDS = frozenset({"source"})
+
 
 def print_exception(exc: Exception, sanitize: bool) -> None:
     """Print a traceback for the current exception to stdout.
@@ -165,6 +171,7 @@ def run(options: Options) -> int:
         typepool,
         deterministic_vars=options.deterministic_vars,
         stack_spill_detection=options.stack_spill_detection,
+        annotate=options.annotate,
     )
 
     decompilations: List[DecompilationState] = []
@@ -655,6 +662,14 @@ def parse_flags(flags: List[str]) -> Options:
         "calling conventions (comma separated, e.g. v0,v1)",
     )
     group.add_argument(
+        "--annotate",
+        metavar="KINDS",
+        dest="annotate",
+        help=f"Comma-separated list of provenance annotations to emit as "
+        f"comments in the output. Kinds: {', '.join(sorted(ANNOTATION_KINDS))}. "
+        f"E.g. --annotate=source",
+    )
+    group.add_argument(
         "--goto",
         metavar="PATTERN",
         dest="goto_patterns",
@@ -691,6 +706,13 @@ def parse_flags(flags: List[str]) -> Options:
     args = parser.parse_args(flags)
     reg_vars = args.reg_vars.split(",") if args.reg_vars else []
     input_regs = args.input_regs.split(",") if args.input_regs else []
+    annotate = frozenset(args.annotate.split(",")) if args.annotate else frozenset()
+    unknown_kinds = annotate - ANNOTATION_KINDS
+    if unknown_kinds:
+        parser.error(
+            f"--annotate: unknown kind(s) {', '.join(sorted(unknown_kinds))} "
+            f"(valid: {', '.join(sorted(ANNOTATION_KINDS))})"
+        )
     preproc_defines: Dict[str, Optional[int]] = {d: None for d in args.undefined}
     for d in args.defined:
         parts = d.split("=", 1)
@@ -750,6 +772,7 @@ def parse_flags(flags: List[str]) -> Options:
         heuristic_strings=args.heuristic_strings,
         reg_vars=reg_vars,
         input_regs=input_regs,
+        annotate=annotate,
         goto_patterns=args.goto_patterns,
         stop_on_error=args.stop_on_error,
         print_assembly=args.print_assembly,
