@@ -407,9 +407,25 @@ class StackInfo:
     def get_param_name(self, loc: ArgLoc) -> Optional[str]:
         return self.param_names.get(loc)
 
+    @staticmethod
+    def _local_decl_rank(var: LocalVar) -> int:
+        # Lower is more declarable. A top-level slot access (`&sp10`, path
+        # `[0, "sp10"]`, len 2) yields the enclosing declaration; a member
+        # access (`sp10.type`, path `[0, "sp10", "type"]`, len 3) is an inner
+        # field that declares nothing. Prefer the shortest real path so a
+        # member store doesn't suppress the slot's declaration.
+        return len(var.path) if var.path is not None else 999
+
     def add_local_var(self, var: LocalVar) -> None:
-        if any(v.value == var.value for v in self.local_vars):
-            return
+        for i, existing in enumerate(self.local_vars):
+            if existing.value == var.value:
+                # Same stack slot already tracked. Replace it only if the new
+                # var declares the slot more directly (e.g. a whole-object
+                # `&sp10` arriving after a `sp10.type = ...` member store, which
+                # otherwise leaves the aggregate undeclared -- invalid C).
+                if self._local_decl_rank(var) < self._local_decl_rank(existing):
+                    self.local_vars[i] = var
+                return
         self.local_vars.append(var)
         # Make sure the local vars stay sorted in order on the stack.
         self.local_vars.sort(key=lambda v: v.value)
@@ -478,7 +494,15 @@ class StackInfo:
             return True
         return False
 
-    def get_stack_var(self, location: int, *, store: bool) -> Expression:
+    def get_stack_var(
+        self, location: int, *, store: bool, target_size: Optional[int] = None
+    ) -> Expression:
+        # `target_size` is the width of the machine access (a scalar load/store
+        # size in bytes) when known, else None for whole-object references like
+        # `&local`. Threading it into `get_deref_field` keeps offset-0 whole-
+        # aggregate elision only where the access width equals the aggregate's
+        # size; a narrower access (e.g. an s32 store into an offset-0 struct
+        # field) then resolves the member instead of rendering the bare struct.
         # See `get_stack_info` for explanation
         if self.in_callee_save_reg_region(location):
             # Some annoying bookkeeping instruction. To avoid
@@ -496,8 +520,19 @@ class StackInfo:
             # Local variable
             assert self.stack_pointer_type is not None
             field_path, field_type, _ = self.stack_pointer_type.get_deref_field(
-                location, target_size=None
+                location, target_size=target_size
             )
+            if field_path is None and target_size is not None:
+                # Width-aware resolution dropped the slot. This happens for an
+                # inferred stack field still typed `?` (unknown size): a sized
+                # access can't match it, so it resolves to nothing and would emit
+                # an undeclared `unkNN` (invalid C -- see custom_stack/irix-g).
+                # Fall back to the width-agnostic resolution, which resolves the
+                # whole slot as before. Known aggregates never reach here -- they
+                # resolve their offset-0 member under the width, which is the fix.
+                field_path, field_type, _ = self.stack_pointer_type.get_deref_field(
+                    location, target_size=None
+                )
 
             # Some variables on the stack are compiler-managed, and aren't declared
             # in the original source. These variables can have different types inside
@@ -510,9 +545,22 @@ class StackInfo:
             # works well enough because nodes are traversed approximately depth-first.
             # TODO: Maybe only do this for certain configurable regions?
 
+            # Weak stack-var typing tracks the last-stored type per byte offset,
+            # to cope with compiler-managed scalar slots whose type differs
+            # across blocks. It must not touch a *known aggregate* resolved here
+            # (e.g. `&e` / `&sp10` for a context or synthesized struct local):
+            # now that access width is threaded in, a store to a member at this
+            # same offset (`e.x`, `sp10.type`) correctly resolves to the member
+            # and records that member's scalar type under `location`. Letting it
+            # override a subsequent whole-object read would retype the aggregate
+            # to the member's scalar (turning `d = &e` into `s32 *d`, then
+            # `d->x` into `*d`). Aggregates are always resolved structurally by
+            # `get_deref_field`, so skip the weak dance for them.
+            is_aggregate = field_type.is_struct() or field_type.is_array()
+
             # Get the previous type stored in `location`
             previous_stored_type = self.weak_stack_var_types.get(location)
-            if previous_stored_type is not None:
+            if previous_stored_type is not None and not is_aggregate:
                 # Check if the `field_type` is compatible with the type of the last store
                 if not previous_stored_type.unify(field_type):
                     # The types weren't compatible: mark this `location` as "weak"
@@ -527,7 +575,7 @@ class StackInfo:
                     field_type = previous_stored_type
 
             # Track the type last stored at `location`
-            if store:
+            if store and not is_aggregate:
                 self.weak_stack_var_types[location] = field_type
 
             ret = LocalVar(location, type=field_type, path=field_path)

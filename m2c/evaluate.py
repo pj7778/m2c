@@ -86,7 +86,7 @@ def deref(
     elif isinstance(arg, AddressMode):
         offset = arg.offset
         if stack_info.is_stack_reg(arg.base):
-            return stack_info.get_stack_var(offset, store=store)
+            return stack_info.get_stack_var(offset, store=store, target_size=size)
         var = regs[arg.base]
     else:
         offset = arg.offset
@@ -119,7 +119,9 @@ def deref(
         arg_loc = uw_var.expr.loc
         assert arg_loc.offset is not None
         return stack_info.get_stack_var(
-            stack_info.allocated_stack_size + arg_loc.offset + offset, store=store
+            stack_info.allocated_stack_size + arg_loc.offset + offset,
+            store=store,
+            target_size=size,
         )
     if isinstance(uw_var, BinaryOp) and uw_var.op == "+":
         for base, addend in [(uw_var.left, uw_var.right), (uw_var.right, uw_var.left)]:
