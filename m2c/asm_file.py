@@ -850,8 +850,11 @@ def parse_file(f: typing.TextIO, arch: ArchAsm, options: Options) -> AsmFile:
                     lineno=lineno,
                     synthetic=False,
                 )
-                ins = parse_instruction(line, meta, arch, asm_state)
-                asm_file.new_instruction(ins)
+                try:
+                    ins = parse_instruction(line, meta, arch, asm_state)
+                    asm_file.new_instruction(ins)
+                except DecompFailure as e:
+                    add_warning(warnings, str(e))
 
     if warnings and options.coding_style.comment_style != CodingStyle.CommentStyle.NONE:
         print("/*")

@@ -1164,6 +1164,26 @@ class MipsArch(Arch):
             assert len(args) == 2 and isinstance(args[0], Register)
             inputs = [args[0]]
             eval_fn = lambda s, a: s.write_statement(error_stmt(instr_str))
+        elif mnemonic in ("mfc2", "cfc2"):
+            assert len(args) >= 1 and isinstance(args[0], Register)
+            outputs = [args[0]]
+            eval_fn = lambda s, a: s.set_reg(
+                a.reg_ref(0), ErrorExpr(f"GTE_{mnemonic}({a.raw_arg(1)})")
+            )
+        elif mnemonic in (
+            "mtc2", "ctc2", "lwc2", "swc2",
+            "cop2", "nclip", "rtps", "rtpt", "mvmva",
+            "ncds", "ncdt", "nccs", "nct", "ncs", "ncc",
+            "dpcs", "dpct", "intpl", "cdp", "cc",
+            "avsz3", "avsz4", "sqr", "dcpl", "op", "gpf", "gpl",
+        ):
+            inputs = [r for r in args if isinstance(r, Register)]
+            for arg in args:
+                if isinstance(arg, AsmAddressMode):
+                    inputs.append(arg.base)
+            eval_fn = lambda s, a: s.write_statement(
+                CommentStmt(f"GTE: {instr_str}")
+            )
         elif mnemonic in cls.instrs_no_dest:
             assert not any(isinstance(a, AsmAddressMode) for a in args)
             inputs = [r for r in args if isinstance(r, Register)]
