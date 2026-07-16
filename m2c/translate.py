@@ -5146,6 +5146,18 @@ def setup_initial_registers(
                 RegMeta(uninteresting=True, initial=True),
             )
 
+    if options.gp_base is not None:
+        # Seed $gp with a constant address so gp-relative accesses
+        # constant-propagate, without polluting the input asm with synthetic
+        # lui/addiu instructions (which would make byte-compare callers see the
+        # function grow by 8 bytes). Equivalent to prepending those two
+        # instructions, but invisible in the output.
+        state.set_initial_reg(
+            Register("gp"),
+            Literal(options.gp_base, type=Type.ptr()),
+            RegMeta(initial=True),
+        )
+
     for reg_name in options.input_regs:
         reg = Register(reg_name)
         sym_name = f"input_{reg_name}"

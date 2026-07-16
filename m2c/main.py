@@ -662,6 +662,14 @@ def parse_flags(flags: List[str]) -> Options:
         "calling conventions (comma separated, e.g. v0,v1)",
     )
     group.add_argument(
+        "--gp-base",
+        metavar="ADDR",
+        dest="gp_base",
+        help="Seed $gp with a constant address at function entry (e.g. "
+        "0x80097DA8), so gp-relative accesses constant-propagate without "
+        "needing synthetic lui/addiu instructions in the input asm.",
+    )
+    group.add_argument(
         "--annotate",
         metavar="KINDS",
         dest="annotate",
@@ -706,6 +714,7 @@ def parse_flags(flags: List[str]) -> Options:
     args = parser.parse_args(flags)
     reg_vars = args.reg_vars.split(",") if args.reg_vars else []
     input_regs = args.input_regs.split(",") if args.input_regs else []
+    gp_base = int(args.gp_base, 0) if args.gp_base else None
     annotate = frozenset(args.annotate.split(",")) if args.annotate else frozenset()
     unknown_kinds = annotate - ANNOTATION_KINDS
     if unknown_kinds:
@@ -772,6 +781,7 @@ def parse_flags(flags: List[str]) -> Options:
         heuristic_strings=args.heuristic_strings,
         reg_vars=reg_vars,
         input_regs=input_regs,
+        gp_base=gp_base,
         annotate=annotate,
         goto_patterns=args.goto_patterns,
         stop_on_error=args.stop_on_error,

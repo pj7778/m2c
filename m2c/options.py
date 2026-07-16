@@ -171,6 +171,7 @@ class Options:
     heuristic_strings: bool
     reg_vars: List[str]
     input_regs: List[str]
+    gp_base: Optional[int]
     annotate: FrozenSet[str]
     goto_patterns: List[str]
     stop_on_error: bool
