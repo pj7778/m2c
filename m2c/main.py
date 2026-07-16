@@ -401,6 +401,18 @@ def parse_flags(flags: List[str]) -> Options:
         ),
     )
     group.add_argument(
+        "--glabels-as-labels",
+        dest="glabels_as_labels",
+        action="store_true",
+        help=(
+            "Treat a global label (glabel) that appears once a function is "
+            "already open as an intra-function label, not a new function "
+            "boundary. Use for files where a secondary entry point or a merged "
+            "tail function shares one function body, so cross-references between "
+            "the halves resolve."
+        ),
+    )
+    group.add_argument(
         "--elide-context-struct-decls",
         dest="elide_context_struct_decls",
         action="store_true",
@@ -813,6 +825,7 @@ def parse_flags(flags: List[str]) -> Options:
         target=args.target,
         print_stack_structs=args.print_stack_structs,
         elide_context_struct_decls=args.elide_context_struct_decls,
+        glabels_as_labels=args.glabels_as_labels,
         unk_inference=args.unk_inference,
         stack_spill_detection=args.stack_spill_detection,
         passes=args.passes,

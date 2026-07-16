@@ -587,6 +587,13 @@ def parse_file(f: typing.TextIO, arch: ArchAsm, options: Options) -> AsmFile:
                 if label.startswith(".") or kind == LabelKind.JUMP_TARGET:
                     if asm_file.current_function is not None:
                         asm_file.new_label(label)
+                elif options.glabels_as_labels and asm_file.current_function is not None:
+                    # A glabel appearing once a function is already open is a
+                    # merged secondary entry point / tail function sharing one
+                    # body. Treat it as an intra-function label so branches
+                    # across the halves resolve, rather than starting a new
+                    # function that hides those labels.
+                    asm_file.new_label(label)
                 elif (
                     re_local_glabel.match(label)
                     or (kind != LabelKind.GLOBAL and re_local_label.match(label))

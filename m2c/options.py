@@ -173,6 +173,7 @@ class Options:
     input_regs: List[str]
     gp_base: Optional[int]
     elide_context_struct_decls: bool
+    glabels_as_labels: bool
     annotate: FrozenSet[str]
     goto_patterns: List[str]
     stop_on_error: bool
