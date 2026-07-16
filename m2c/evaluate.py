@@ -734,15 +734,13 @@ def handle_shift_right(
                 mul = BinaryOp.int(expr.left, "*", Literal(value=rhs // pow2))
                 return as_type(mul, tp, silent=False)
     elif isinstance(shift, Literal) and 0 <= shift.value < 16:
-        # Sign-extend-and-scale idiom, `(x << rhs) >> shift.value` with rhs > shift.value,
-        # generalized to any shift.value -- not just the {16, 24} byte/halfword-boundary
-        # ones the block above requires. Two's-complement algebra makes this exact for ANY
-        # rhs > shift.value >= 0: `(x << rhs) >> shift.value` == sign_extend_{32-rhs}(x) <<
-        # (rhs - shift.value), regardless of what shift.value itself is -- shift.value only
-        # affects the residual scale, never the sign-extension width, which depends solely
-        # on `rhs`. The type is still only assigned (s16/s8) when `rhs` itself lands on a
-        # width our type system can name; the arithmetic is folded either way so the VALUE
-        # stays correct even when it can't be typed. Without this, an index expression like
+        # Sign-extend-and-scale idiom, `(x << rhs) >> shift.value` with rhs > shift.value:
+        # the block above only handles shift.value in {16, 24}; this one handles any
+        # smaller shift.value, still requiring rhs in {16, 24} so the sign-extension
+        # width (which depends solely on `rhs`) lands on a type we can name (s16/s8).
+        # Two's-complement algebra makes the rewrite exact: `(x << rhs) >> shift.value`
+        # == sign_extend_{32-rhs}(x) << (rhs - shift.value) -- shift.value only affects
+        # the residual scale. Without this, an index expression like
         # `((s32)(x << 0x10) >> 0xC)` (rhs=16, shift.value=12 -- sign-extend a 16-bit value,
         # then scale by 16, a real pattern for a stride-16 array index) fell all the way
         # through to a bare, untyped `>>`, which is exactly the shape array_access_from_add()

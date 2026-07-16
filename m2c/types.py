@@ -615,10 +615,14 @@ class Type:
             exact_element_access = (
                 target_size is not None and target_size == size and target.is_pointer()
             )
-            if array_index < 0 or (
-                not exact_element_access
-                and (known_array_size is None or array_index >= known_array_size)
-            ):
+            if array_index < 0:
+                return self._no_matching_field()
+            if known_array_size is not None:
+                # A known dimension always keeps its bound check; the T** trust
+                # above only applies when the size is unknown.
+                if array_index >= known_array_size:
+                    return self._no_matching_field()
+            elif not exact_element_access:
                 return self._no_matching_field()
 
         field_path, field_type, remaining_offset = target.get_field(
