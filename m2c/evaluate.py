@@ -480,11 +480,39 @@ def add_imm(
         return BinaryOp.intptr(left=source, op="+", right=imm)
 
 
+def _cast_void_pointee_deref(expr: Expression, type: Type) -> Expression:
+    """gcc 2.7.2 can't dereference a void pointee: `*p` through a `void *` is
+    rejected for loads ("void value not ignored as it ought to be") and
+    rejected or silently dropped for stores ("invalid use of void expression").
+    The memory instruction pins both width and signedness (sw/lw -> s32,
+    lh -> s16, lhu -> u16, lb -> s8, lbu -> u8, ...) via the `type` the arch
+    table passes in, so cast the pointer to it: `*(s32 *) p`. Narrow on
+    purpose: plain offset-0 derefs with no resolved field path only."""
+    if (
+        isinstance(expr, StructAccess)
+        and expr.offset == 0
+        and expr.field_path is None
+    ):
+        pointee = early_unwrap(expr.struct_var).type.get_pointer_target()
+        if pointee is not None and pointee.is_void():
+            return replace(
+                expr,
+                struct_var=Cast(
+                    expr=expr.struct_var,
+                    type=Type.ptr(type),
+                    reinterpret=True,
+                    silent=False,
+                ),
+            )
+    return expr
+
+
 def handle_load(args: InstrArgs, type: Type) -> Expression:
     size = type.get_size_bytes()
     assert size is not None
     output_reg = args.reg_ref(0)
     expr = deref(args.memory_ref(1), args.regs, args.stack_info, size=size)
+    expr = _cast_void_pointee_deref(expr, type)
 
     def load_rodata_constant() -> Optional[Expression]:
         if not isinstance(expr, StructAccess):
@@ -666,29 +694,7 @@ def make_store_real(
         # Elide register preserval.
         return None
     dest = deref(target, regs, stack_info, size=size, store=True)
-    # A plain-deref store through a void pointee renders as `*p = ...`, which
-    # gcc 2.7.2 rejects ("invalid use of void expression" / "void value not
-    # ignored") or silently drops. The store instruction pins the width, so
-    # cast the pointer to it: `*(s32 *) p = ...` (sw; s16/s8 for sh/sb).
-    # Loads through void pointees have the same problem (seen on PSX CatPrim/
-    # TermPrim: `*p | 0xFFFFFF`) but are deliberately not handled here -- this
-    # is the store path only; widen via the load path if that proves needed.
-    if (
-        isinstance(dest, StructAccess)
-        and dest.offset == 0
-        and dest.field_path is None
-    ):
-        pointee = early_unwrap(dest.struct_var).type.get_pointer_target()
-        if pointee is not None and pointee.is_void():
-            dest = replace(
-                dest,
-                struct_var=Cast(
-                    expr=dest.struct_var,
-                    type=Type.ptr(type),
-                    reinterpret=True,
-                    silent=False,
-                ),
-            )
+    dest = _cast_void_pointee_deref(dest, type)
     dest.type.unify(type)
     return StoreStmt(source=as_type(source_val, type, silent=is_stack), dest=dest)
 
