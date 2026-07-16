@@ -1575,6 +1575,20 @@ def get_function_text(function_info: FunctionInfo, options: Options) -> str:
         for decl in sorted(temp_decls, key=var_sort, reverse=fmt.descending_regs):
             function_lines.append(SimpleStatement(decl).format(fmt))
 
+        # A `saved_reg_*`/`input_*` sentinel that reached the body is a garbage
+        # register read m2c's dataflow couldn't prove is written before use.
+        # It renders as a bare identifier; declare it as an uninitialized local
+        # so the C compiles (value is never actually consumed for the
+        # false-positive case). See translate.StackInfo.used_uninit_regs.
+        for name, type in sorted(function_info.stack_info.used_uninit_regs.items()):
+            type_decl = type.to_decl(name, fmt)
+            function_lines.append(
+                SimpleStatement(
+                    f"{type_decl};", comments=["possibly uninitialized"]
+                ).format(fmt)
+            )
+            any_decl = True
+
         for phi_var in function_info.stack_info.naive_phi_vars:
             type_decl = phi_var.type.to_decl(phi_var.get_var_name(), fmt)
             function_lines.append(SimpleStatement(f"{type_decl};").format(fmt))

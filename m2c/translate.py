@@ -334,6 +334,12 @@ class StackInfo:
     replace_first_arg: Optional[Tuple[str, Type]] = None
     weak_stack_var_types: Dict[int, Type] = field(default_factory=dict)
     weak_stack_var_locations: Set[int] = field(default_factory=set)
+    # Fake `saved_reg_*`/`input_*` symbols (a callee-saved or caller-saved
+    # register that m2c's dataflow could not prove is written before this read)
+    # that actually reached the formatted output. Each is declared as an
+    # uninitialized local so the C compiles -- see build_function. Maps
+    # symbol name -> resolved type. Populated at GlobalSymbol.format time.
+    used_uninit_regs: Dict[str, Type] = field(default_factory=dict)
 
     def temp_var(self, prefix: str) -> str:
         counter = self.temp_name_counter.get(prefix, 0) + 1
@@ -476,7 +482,7 @@ class StackInfo:
     def saved_reg_symbol(self, reg_name: str) -> GlobalSymbol:
         sym_name = "saved_reg_" + reg_name
         type = self.unique_type_for("saved_reg", sym_name, Type.any_reg())
-        return GlobalSymbol(symbol_name=sym_name, type=type)
+        return GlobalSymbol(symbol_name=sym_name, type=type, uninit_reg_stack_info=self)
 
     def should_save(self, expr: Expression, offset: Optional[int]) -> bool:
         expr = early_unwrap(expr)
@@ -1826,6 +1832,12 @@ class GlobalSymbol(Expression):
     type_provided: bool = False
     initializer_in_typemap: bool = False
     demangled_str: Optional[str] = None
+    # Set for the fake `saved_reg_*`/`input_*` sentinels only. When such a
+    # sentinel actually renders into the output it references an undeclared
+    # identifier (invalid C); recording it here lets build_function declare it
+    # as an uninitialized local (the documented hand-fix for the
+    # saved-reg-false-positive class).
+    uninit_reg_stack_info: Optional["StackInfo"] = None
 
     def dependencies(self) -> List[Expression]:
         return []
@@ -1854,6 +1866,10 @@ class GlobalSymbol(Expression):
         return ret
 
     def format(self, fmt: Formatter) -> str:
+        if self.uninit_reg_stack_info is not None:
+            # A garbage callee/caller-saved register read reached the output;
+            # remember it so it gets declared as an uninitialized local.
+            self.uninit_reg_stack_info.used_uninit_regs[self.symbol_name] = self.type
         return self.symbol_name
 
     def potential_array_dim(self, element_size: int) -> Tuple[int, int]:
@@ -5164,7 +5180,7 @@ def setup_initial_registers(
         type = stack_info.unique_type_for("input_reg", sym_name, Type.any_reg())
         state.set_initial_reg(
             reg,
-            GlobalSymbol(sym_name, type=type),
+            GlobalSymbol(sym_name, type=type, uninit_reg_stack_info=stack_info),
             RegMeta(initial=True),
         )
 
