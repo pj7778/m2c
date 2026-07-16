@@ -12,6 +12,8 @@ glabel test
     cfc2  $v0, $31
     mfc2  $v1, $2
     swc2  $16, 0x0($a1)
+    swc2  $17, 0x4($a1)
+    swc2  $18, 0x8($a1)
     lw    $ra, 0x1C($sp)
     jr    $ra
      addiu $sp, $sp, 0x20

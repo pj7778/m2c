@@ -100,6 +100,7 @@ from .evaluate import (
     imm_add_32,
     load_upper,
     make_store,
+    make_store_real,
     void_fn_op,
 )
 from .types import FunctionSignature, Type
@@ -1173,6 +1174,33 @@ class MipsArch(Arch):
                 a.reg_ref(0),
                 GteReadExpr(mnemonic=mn, reg=str(a.raw_arg(1)).lstrip("$"), type=Type.s32()),
             )
+        elif mnemonic == "swc2":
+            # Store a GTE/cop2 data register to memory. `args[0]` is not a GPR;
+            # it is the raw cop2 register number (same operand shape as any
+            # other coprocessor store), so it must not be treated as a normal
+            # register input -- read its value as a GteReadExpr instead, the
+            # same way mfc2 (instrs_cop2_write_gpr) reads it.
+            assert isinstance(args[0], Register)
+            outputs = make_memory_access(args[1])
+            is_store = True
+            if isinstance(args[1], AsmAddressMode):
+                inputs.append(args[1].base)
+
+            def eval_fn(s: NodeState, a: InstrArgs) -> None:
+                source_val = GteReadExpr(
+                    mnemonic="mfc2", reg=str(a.raw_arg(0)).lstrip("$"), type=Type.s32()
+                )
+                store = make_store_real(
+                    source_val,
+                    None,
+                    a.memory_ref(1),
+                    a.regs,
+                    a.stack_info,
+                    Type.reg32(likely_float=False),
+                )
+                if store is not None:
+                    s.store_memory(store, a.reg_ref(0))
+
         elif mnemonic in cls.instrs_cop2_comment:
             inputs = [r for r in args if isinstance(r, Register)]
             for arg in args:
@@ -2239,7 +2267,7 @@ class MipseeArch(MipsArch):
 class MipsPsxArch(MipsArch):
     instrs_cop2_write_gpr: Set[str] = {"mfc2", "cfc2"}
     instrs_cop2_comment: Set[str] = {
-        "mtc2", "ctc2", "lwc2", "swc2",
+        "mtc2", "ctc2", "lwc2",
         "cop2", "nclip", "rtps", "rtpt", "mvmva",
         "ncds", "ncdt", "nccs", "ncct", "nct", "ncs", "ncc",
         "dpcs", "dpct", "intpl", "cdp", "cc",
