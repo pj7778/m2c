@@ -489,10 +489,19 @@ class Type:
             # than one if the StructDeclaration is for a union.
             possible_fields = data.struct.fields_containing_offset(offset)
 
-            # We don't support bitfield access. If there isn't a field at the given offset,
-            # it's better to bail early. We're likely recursively resolving a field, and
-            # it's better for the caller to check for other fields (like in a union) than
-            # to get a reference to a struct with bitfields.
+            # A byte-aligned bitfield (bit-offset and width both multiples of 8)
+            # compiles to a plain load/store, just like an ordinary field of that
+            # size -- so it can be named the same way. Try that before bailing.
+            if not possible_fields and data.struct.has_bitfields:
+                possible_fields = data.struct.byte_aligned_bitfields_containing_offset(
+                    offset
+                )
+
+            # We don't support sub-byte bitfield access. If there still isn't a field
+            # at the given offset, it's better to bail early. We're likely recursively
+            # resolving a field, and it's better for the caller to check for other
+            # fields (like in a union) than to get a reference to a struct with
+            # bitfields.
             if not possible_fields and data.struct.has_bitfields:
                 return self._no_matching_field()
 
@@ -625,7 +634,11 @@ class Type:
         if self.is_struct():
             assert data.struct is not None
             if data.struct.has_bitfields:
-                # TODO: Support bitfields
+                # TODO: Support bitfields. Note this bails even for structs that
+                # are entirely byte-aligned bitfields (see `get_field`'s narrower
+                # exception): doing so here would mean merging `.fields` and
+                # `.bitfields` into one offset-ordered walk, which is more
+                # invasive than this initializer-list feature warrants.
                 return None
 
             output: List[Union[int, Type]] = []
@@ -1349,6 +1362,42 @@ class StructDeclaration:
             if field.offset + field_size <= offset:
                 continue
             fields.append(field)
+        return fields
+
+    def byte_aligned_bitfields_containing_offset(self, offset: int) -> List[StructField]:
+        """
+        Return synthetic StructFields for bitfields containing the given offset
+        (in bytes) that are "byte-aligned": both their bit-offset and width are
+        multiples of 8. Such a bitfield is emitted by the compiler as a plain
+        byte/halfword/word load-or-store, indistinguishable from an ordinary
+        field of that size, so it can be resolved and named like one.
+
+        Sub-byte-packed bitfields (the common case, e.g. `a:3` sharing a byte
+        with `b:5`) are never returned here; callers should keep bailing out
+        for those, as before.
+        """
+        fields = []
+        for bf in self.bitfields:
+            if bf.bit_offset % 8 != 0 or bf.bit_width % 8 != 0:
+                continue
+            field_offset = bf.bit_offset // 8
+            field_size = bf.bit_width // 8
+            if field_size == 1:
+                field_type = Type.u8()
+            elif field_size == 2:
+                field_type = Type.u16()
+            elif field_size == 4:
+                field_type = Type.u32()
+            else:
+                # Not a size m2c has a primitive integer type for (e.g. a
+                # byte-aligned 24-bit field); can't be named as a plain field.
+                continue
+            if field_offset <= offset < field_offset + field_size:
+                fields.append(
+                    self.StructField(
+                        type=field_type, offset=field_offset, name=bf.name, known=True
+                    )
+                )
         return fields
 
     def try_add_field(
