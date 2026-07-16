@@ -1167,6 +1167,8 @@ class MipsArch(Arch):
             assert len(args) == 2 and isinstance(args[0], Register)
             inputs = [args[0]]
             eval_fn = lambda s, a: s.write_statement(CommentStmt(f"COP0: {instr_str}"))
+        elif mnemonic == "rfe":
+            eval_fn = lambda s, a: s.write_statement(CommentStmt(f"COP0: {instr_str}"))
         elif mnemonic in cls.instrs_cop2_write_gpr:
             assert len(args) >= 1 and isinstance(args[0], Register)
             outputs = [args[0]]
