@@ -138,7 +138,12 @@ PSEUDO_FUNCTION_OPS: Set[str] = {
 
 
 def as_type(
-    expr: Expression, type: Type, silent: bool, *, unify: bool = True
+    expr: Expression,
+    type: Type,
+    silent: bool,
+    *,
+    unify: bool = True,
+    cast_pointer_mismatches: bool = False,
 ) -> Expression:
     type = type.weaken_void_ptr()
     if isinstance(expr, Literal):
@@ -151,10 +156,22 @@ def as_type(
         expr = Literal(expr.value, expr.type.clone_literal_type())
         unify = True
     ptr_target_type = type.get_pointer_target()
+    # gcc 2.7.2's cc1 SIGSEGVs while printing the type-mismatch warning for an
+    # uncasted pointer -> different-pointer call argument (e.g. SVECTOR* to
+    # s16*, ModelType* to _GsCOORDINATE2*). When both source and target are
+    # pointers that don't unify, emit an explicit reinterpret cast to the
+    # parameter type instead of m2c's `&ptr->field0` structural rewrite (which
+    # is type-correct but doesn't match the original source's pointer cast).
+    # Scoped to call args via cast_pointer_mismatches; narrow to pointer pairs.
+    pointer_mismatch = (
+        cast_pointer_mismatches
+        and ptr_target_type is not None
+        and expr.type.get_pointer_target() is not None
+    )
     if unify and expr.type.unify(type):
         if silent or isinstance(expr, Literal):
             return expr
-    elif ptr_target_type is not None:
+    elif ptr_target_type is not None and not pointer_mismatch:
         ptr_target_type_size = ptr_target_type.get_size_bytes()
         field_path, field_type, _ = expr.type.get_deref_field(
             0, target_size=ptr_target_type_size
@@ -3940,7 +3957,10 @@ class NodeState:
                 else:
                     expr = ErrorExpr(f"Unable to find stack arg {offset:#x} in block")
             func_args.append(
-                CommentExpr.wrap(as_type(expr, slot.type, True), prefix=slot.comment)
+                CommentExpr.wrap(
+                    as_type(expr, slot.type, True, cast_pointer_mismatches=True),
+                    prefix=slot.comment,
+                )
             )
 
         for slot in abi.possible_slots:
