@@ -1792,7 +1792,9 @@ class Lwr(Expression):
         return [self.load_expr]
 
     def format(self, fmt: Formatter) -> str:
-        return f"M2C_LWR({self.load_expr.format(fmt)})"
+        if fmt.valid_syntax:
+            return f"M2C_UNALIGNED32({self.load_expr.format(fmt)})"
+        return f"(unaligned s32) {self.load_expr.format(fmt)}"
 
 
 @dataclass(frozen=True)
