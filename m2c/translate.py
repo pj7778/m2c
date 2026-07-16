@@ -4025,6 +4025,129 @@ def evaluate_instruction(instr_ref: InstrRef, state: NodeState) -> None:
         assert state.branch_condition is not None or state.switch_control is not None
 
 
+def _match_unaligned_word_store(
+    stmt: Statement,
+) -> Optional[Tuple[Expression, int, Expression, int]]:
+    """If `stmt` is a single 4-byte unaligned store of the form
+    `dst_base->field = (unaligned s32) src_base->field` (an swl/swr pair whose
+    source is an UnalignedLoad of a struct member), return
+    (dst_base, dst_offset, src_base, src_offset). Otherwise return None. Bases
+    are early-unwrapped so the same underlying pointer compares equal across the
+    run even when each store references it through a different temp."""
+    if not isinstance(stmt, StoreStmt):
+        return None
+    dest = stmt.dest
+    if not isinstance(dest, StructAccess):
+        return None
+    src = early_unwrap(stmt.source)
+    if not isinstance(src, UnalignedLoad):
+        return None
+    inner = early_unwrap(src.load_expr)
+    if not isinstance(inner, StructAccess):
+        return None
+    return (
+        early_unwrap(dest.struct_var),
+        dest.offset,
+        early_unwrap(inner.struct_var),
+        inner.offset,
+    )
+
+
+def _aggregate_access(
+    base: Expression, offset: int, span: int, stack_info: StackInfo
+) -> Optional[StructAccess]:
+    """Reconstruct a struct/array member access of exactly `span` bytes at
+    `base`+`offset`, but only if the base's known type actually has an aggregate
+    field of that exact size there. Returns None when the type doesn't support a
+    clean whole-aggregate access (so callers fall back to per-word stores)."""
+    field_path, field_type, _ = base.type.get_deref_field(offset, target_size=span)
+    if field_path is None:
+        return None
+    if not (field_type.is_struct() or field_type.is_array()):
+        return None
+    if field_type.get_size_bytes() != span:
+        return None
+    return StructAccess(
+        struct_var=base,
+        offset=offset,
+        target_size=span,
+        field_path=field_path,
+        stack_info=stack_info,
+        type=field_type,
+    )
+
+
+def coalesce_unaligned_struct_copies(
+    stmts: List[Statement], stack_info: StackInfo
+) -> List[Statement]:
+    """Fold a run of consecutive unaligned word stores that together copy one
+    aggregate into a single `dst = src` assignment.
+
+    gcc 2.7.2 (PSX) copies a sub-4-aligned aggregate (e.g. an 8-byte SVECTOR)
+    by value using lwl/lwr + swl/swr word pairs. m2c renders each pair as
+    `dst->field = (unaligned s32) src->field`. When -- and only when -- both the
+    destination and the source resolve, given their known types, to the *same*
+    aggregate of exactly the copied size, the natural C `dst_agg = src_agg`
+    recompiles to the identical unaligned word pairs, so we emit that. Anything
+    that doesn't type-check cleanly keeps the M2C_UNALIGNED32 fallback (a
+    genuinely-unaligned copy must never be silently rewritten).
+
+    Comments (source annotations) may be interleaved between the stores; they
+    are left in place."""
+    # Collect the indices of the unaligned word stores in stream order, along
+    # with their (dst_base, dst_off, src_base, src_off) coordinates.
+    stores: List[Tuple[int, Expression, int, Expression, int]] = []
+    for i, stmt in enumerate(stmts):
+        m = _match_unaligned_word_store(stmt)
+        if m is not None:
+            stores.append((i, *m))
+
+    remove: Set[int] = set()
+    replace_with: Dict[int, Statement] = {}
+    k = 0
+    while k < len(stores):
+        # Grow a maximal run of contiguous word moves sharing both bases.
+        run = [stores[k]]
+        while k + 1 < len(stores):
+            _, d_base, d_off, s_base, s_off = run[-1]
+            ni, nd_base, nd_off, ns_base, ns_off = stores[k + 1]
+            if (
+                nd_base == d_base
+                and ns_base == s_base
+                and nd_off == d_off + 4
+                and ns_off == s_off + 4
+            ):
+                run.append(stores[k + 1])
+                k += 1
+            else:
+                break
+        k += 1
+        if len(run) < 2:
+            continue
+        span = 4 * len(run)
+        d_base, d_off0 = run[0][1], run[0][2]
+        s_base, s_off0 = run[0][3], run[0][4]
+        dst_agg = _aggregate_access(d_base, d_off0, span, stack_info)
+        src_agg = _aggregate_access(s_base, s_off0, span, stack_info)
+        if dst_agg is None or src_agg is None:
+            continue
+        if not dst_agg.type.unify(src_agg.type):
+            continue
+        first_idx = run[0][0]
+        replace_with[first_idx] = StoreStmt(source=src_agg, dest=dst_agg)
+        for entry in run[1:]:
+            remove.add(entry[0])
+
+    if not replace_with and not remove:
+        return stmts
+    out: List[Statement] = []
+    for i, stmt in enumerate(stmts):
+        if i in remove:
+            continue
+        out.append(replace_with.get(i, stmt))
+    return out
+
+
 def translate_node_body(state: NodeState) -> BlockInfo:
     """
     Given a node and current register contents, return a BlockInfo containing
@@ -4033,6 +4156,8 @@ def translate_node_body(state: NodeState) -> BlockInfo:
     for instr_ref in state.node.block.instruction_refs:
         with state.regs.set_current_instr(instr_ref):
             evaluate_instruction(instr_ref, state)
+
+    state.to_write = coalesce_unaligned_struct_copies(state.to_write, state.stack_info)
 
     if state.branch_condition is not None:
         state.branch_condition.use()
