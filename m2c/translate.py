@@ -294,6 +294,16 @@ class PersistentFunctionState:
         default_factory=dict
     )
 
+    # Stack offsets discovered (on an earlier pass) to hold an address-taken
+    # aggregate local, keyed by offset -> the aggregate (struct/array) type.
+    # Recorded when `&spN` is passed to a call whose parameter is a
+    # pointer-to-aggregate: gcc can't register-promote an address-taken
+    # aggregate, so the source almost certainly declared a struct/array local
+    # there. Seeding the stack struct field on the next pass makes the member
+    # stores render as `local.field = ...` (one aggregate) instead of a run of
+    # loose `spNN` scalars. See get_stack_info.
+    stack_aggregate_types: Dict[int, Type] = field(default_factory=dict)
+
 
 @dataclass
 class StackInfo:
@@ -885,6 +895,31 @@ def get_stack_info(
             global_info.typepool,
             size=info.allocated_stack_size,
             tag_name=stack_struct_name,
+        )
+    # Seed address-taken aggregate locals discovered on an earlier pass (see
+    # PersistentFunctionState.stack_aggregate_types): `&spN` passed to a
+    # pointer-to-aggregate param means the source almost certainly declared a
+    # struct/array local there, which gcc can't register-promote. Synthesizing
+    # the field makes the member stores render as one aggregate local instead of
+    # loose `spNN` scalars. The stack struct is reused (and grows scalar fields)
+    # across passes, so clear any overlapping *auto* fields first; a
+    # user-provided context field (known=True) always wins and blocks the seed.
+    for offset, agg_type in persistent_state.stack_aggregate_types.items():
+        size = agg_type.get_size_bytes()
+        if size is None or offset < info.subroutine_arg_top:
+            continue
+        overlap = [
+            f
+            for f in stack_struct.fields
+            if offset <= f.offset < offset + size
+            or f.offset <= offset < f.offset + (f.type.get_size_bytes() or 1)
+        ]
+        if any(f.known for f in overlap):
+            continue
+        for f in overlap:
+            stack_struct.fields.remove(f)
+        stack_struct.try_add_field(
+            agg_type, offset, f"sp{format_hex(offset)}", size=size
         )
     # Mark the struct as a stack struct so we never try to use a reference to the struct itself
     stack_struct.is_stack = True
@@ -3875,6 +3910,27 @@ class NodeState:
         self.prevent_later_function_calls()
         self.write_statement(store)
 
+    def _maybe_record_stack_aggregate(
+        self, arg: Expression, param_type: Type
+    ) -> None:
+        """If a call arg is `&spN` and the callee param is a pointer to an
+        aggregate (struct/array wider than a word), remember that the stack slot
+        holds that aggregate so the next translation pass can synthesize a single
+        struct/array local instead of decomposing it into loose `spNN` scalars.
+        This reproduces the address-taken aggregate that gcc can't
+        register-promote (the documented "target keeps more on stack" mismatch)."""
+        target = param_type.get_pointer_target()
+        if target is None or not (target.is_struct() or target.is_array()):
+            return
+        size = target.get_size_bytes()
+        if size is None or size <= 4:
+            return
+        uw = early_unwrap(arg)
+        if isinstance(uw, AddressOf) and isinstance(uw.expr, LocalVar):
+            self.stack_info.persistent_state.stack_aggregate_types[
+                uw.expr.value
+            ] = target
+
     def _reg_probably_meant_as_function_argument(
         self, reg: Register, call_instr: InstrRef
     ) -> bool:
@@ -3956,6 +4012,7 @@ class NodeState:
                     expr = self.subroutine_args.pop(offset)
                 else:
                     expr = ErrorExpr(f"Unable to find stack arg {offset:#x} in block")
+            self._maybe_record_stack_aggregate(expr, slot.type)
             func_args.append(
                 CommentExpr.wrap(
                     as_type(expr, slot.type, True, cast_pointer_mismatches=True),
