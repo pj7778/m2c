@@ -1164,19 +1164,13 @@ class MipsArch(Arch):
             assert len(args) == 2 and isinstance(args[0], Register)
             inputs = [args[0]]
             eval_fn = lambda s, a: s.write_statement(error_stmt(instr_str))
-        elif mnemonic in ("mfc2", "cfc2"):
+        elif mnemonic in cls.instrs_cop2_write_gpr:
             assert len(args) >= 1 and isinstance(args[0], Register)
             outputs = [args[0]]
             eval_fn = lambda s, a: s.set_reg(
                 a.reg_ref(0), ErrorExpr(f"GTE_{mnemonic}({a.raw_arg(1)})")
             )
-        elif mnemonic in (
-            "mtc2", "ctc2", "lwc2", "swc2",
-            "cop2", "nclip", "rtps", "rtpt", "mvmva",
-            "ncds", "ncdt", "nccs", "nct", "ncs", "ncc",
-            "dpcs", "dpct", "intpl", "cdp", "cc",
-            "avsz3", "avsz4", "sqr", "dcpl", "op", "gpf", "gpl",
-        ):
+        elif mnemonic in cls.instrs_cop2_comment:
             inputs = [r for r in args if isinstance(r, Register)]
             for arg in args:
                 if isinstance(arg, AsmAddressMode):
@@ -1393,6 +1387,8 @@ class MipsArch(Arch):
         "ctc1",
         "nop",
     }
+    instrs_cop2_write_gpr: Set[str] = set()
+    instrs_cop2_comment: Set[str] = set()
     instrs_store: StoreInstrMap = {
         # Storage instructions
         "sb": lambda a: make_store(a, type=Type.int_of_size(8)),
@@ -2232,3 +2228,14 @@ class MipseeArch(MipsArch):
             arg_slots=known_slots,
             possible_slots=possible_slots,
         )
+
+
+class MipsPsxArch(MipsArch):
+    instrs_cop2_write_gpr: Set[str] = {"mfc2", "cfc2"}
+    instrs_cop2_comment: Set[str] = {
+        "mtc2", "ctc2", "lwc2", "swc2",
+        "cop2", "nclip", "rtps", "rtpt", "mvmva",
+        "ncds", "ncdt", "nccs", "nct", "ncs", "ncc",
+        "dpcs", "dpct", "intpl", "cdp", "cc",
+        "avsz3", "avsz4", "sqr", "dcpl", "op", "gpf", "gpl",
+    }

@@ -1,1 +1,1 @@
--t mips-gcc-c
+-t mipsel-gcc-c

@@ -24,7 +24,7 @@ from .translate import (
 )
 from .types import TypePool
 from .arch_arm import ArmArch, ArmGbaArch
-from .arch_mips import MipsArch, MipseeArch
+from .arch_mips import MipsArch, MipseeArch, MipsPsxArch
 from .arch_ppc import PpcArch
 from .arch_sh import Sh2Arch
 
@@ -90,6 +90,8 @@ def run(options: Options) -> int:
     if options.target.arch == Target.ArchEnum.MIPS:
         if options.target.platform == Target.PlatformEnum.MIPSEE:
             arch = MipseeArch()
+        elif options.target.platform == Target.PlatformEnum.MIPSEL:
+            arch = MipsPsxArch()
         else:
             arch = MipsArch()
     elif options.target.arch == Target.ArchEnum.PPC:
