@@ -666,6 +666,29 @@ def make_store_real(
         # Elide register preserval.
         return None
     dest = deref(target, regs, stack_info, size=size, store=True)
+    # A plain-deref store through a void pointee renders as `*p = ...`, which
+    # gcc 2.7.2 rejects ("invalid use of void expression" / "void value not
+    # ignored") or silently drops. The store instruction pins the width, so
+    # cast the pointer to it: `*(s32 *) p = ...` (sw; s16/s8 for sh/sb).
+    # Loads through void pointees have the same problem (seen on PSX CatPrim/
+    # TermPrim: `*p | 0xFFFFFF`) but are deliberately not handled here -- this
+    # is the store path only; widen via the load path if that proves needed.
+    if (
+        isinstance(dest, StructAccess)
+        and dest.offset == 0
+        and dest.field_path is None
+    ):
+        pointee = early_unwrap(dest.struct_var).type.get_pointer_target()
+        if pointee is not None and pointee.is_void():
+            dest = replace(
+                dest,
+                struct_var=Cast(
+                    expr=dest.struct_var,
+                    type=Type.ptr(type),
+                    reinterpret=True,
+                    silent=False,
+                ),
+            )
     dest.type.unify(type)
     return StoreStmt(source=as_type(source_val, type, silent=is_stack), dest=dest)
 
