@@ -648,6 +648,13 @@ def parse_flags(flags: List[str]) -> Options:
         "registers (comma separated)",
     )
     group.add_argument(
+        "--input-regs",
+        metavar="REGISTERS",
+        dest="input_regs",
+        help="Mark registers as defined at function entry, for non-standard "
+        "calling conventions (comma separated, e.g. v0,v1)",
+    )
+    group.add_argument(
         "--goto",
         metavar="PATTERN",
         dest="goto_patterns",
@@ -683,6 +690,7 @@ def parse_flags(flags: List[str]) -> Options:
 
     args = parser.parse_args(flags)
     reg_vars = args.reg_vars.split(",") if args.reg_vars else []
+    input_regs = args.input_regs.split(",") if args.input_regs else []
     preproc_defines: Dict[str, Optional[int]] = {d: None for d in args.undefined}
     for d in args.defined:
         parts = d.split("=", 1)
@@ -741,6 +749,7 @@ def parse_flags(flags: List[str]) -> Options:
         force_decimal=args.force_decimal,
         heuristic_strings=args.heuristic_strings,
         reg_vars=reg_vars,
+        input_regs=input_regs,
         goto_patterns=args.goto_patterns,
         stop_on_error=args.stop_on_error,
         print_assembly=args.print_assembly,

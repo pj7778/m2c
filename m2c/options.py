@@ -170,6 +170,7 @@ class Options:
     force_decimal: bool
     heuristic_strings: bool
     reg_vars: List[str]
+    input_regs: List[str]
     goto_patterns: List[str]
     stop_on_error: bool
     print_assembly: bool

@@ -4707,7 +4707,9 @@ def setup_reg_vars(stack_info: StackInfo, options: Options) -> None:
         stack_info.add_register_var(reg, reg_name)
 
 
-def setup_initial_registers(state: NodeState, fn_sig: FunctionSignature) -> None:
+def setup_initial_registers(
+    state: NodeState, fn_sig: FunctionSignature, options: Options
+) -> None:
     """Set up initial register contents for translation."""
     stack_info = state.stack_info
     arch = stack_info.global_info.arch
@@ -4748,6 +4750,16 @@ def setup_initial_registers(state: NodeState, fn_sig: FunctionSignature) -> None
                 RegMeta(uninteresting=True, initial=True),
             )
 
+    for reg_name in options.input_regs:
+        reg = Register(reg_name)
+        sym_name = f"input_{reg_name}"
+        type = stack_info.unique_type_for("input_reg", sym_name, Type.any_reg())
+        state.set_initial_reg(
+            reg,
+            GlobalSymbol(sym_name, type=type),
+            RegMeta(initial=True),
+        )
+
 
 def translate_to_ast(
     function: Function,
@@ -4780,7 +4792,7 @@ def translate_to_ast(
     assert fn_sig is not None, "fn_type is known to be a function"
     stack_info.is_variadic = fn_sig.is_variadic
 
-    setup_initial_registers(state, fn_sig)
+    setup_initial_registers(state, fn_sig, options)
 
     if options.debug:
         print(stack_info)
