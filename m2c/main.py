@@ -172,6 +172,7 @@ def run(options: Options) -> int:
         deterministic_vars=options.deterministic_vars,
         stack_spill_detection=options.stack_spill_detection,
         annotate=options.annotate,
+        alloc_container_fns=options.alloc_container_fns,
     )
 
     decompilations: List[DecompilationState] = []
@@ -410,6 +411,22 @@ def parse_flags(flags: List[str]) -> Options:
             "boundary. Use for files where a secondary entry point or a merged "
             "tail function shares one function body, so cross-references between "
             "the halves resolve."
+        ),
+    )
+    group.add_argument(
+        "--alloc-container-fn",
+        metavar="NAME",
+        dest="alloc_container_fns",
+        action="append",
+        default=[],
+        help=(
+            "Name of an allocation function (e.g. valloc) whose constant "
+            "byte-size argument selects the returned struct type. When the size "
+            "exactly matches a unique --context 'container' struct -- one that "
+            "embeds another struct at offset 0 -- and the allocated local would "
+            "otherwise only unify to that embedded leaf via a callee parameter, "
+            "type the result as the container instead. Repeatable; a value may "
+            "be a comma-separated list."
         ),
     )
     group.add_argument(
@@ -740,6 +757,12 @@ def parse_flags(flags: List[str]) -> Options:
     reg_vars = args.reg_vars.split(",") if args.reg_vars else []
     input_regs = args.input_regs.split(",") if args.input_regs else []
     gp_base = int(args.gp_base, 0) if args.gp_base else None
+    alloc_container_fns = frozenset(
+        name
+        for spec in args.alloc_container_fns
+        for name in spec.split(",")
+        if name
+    )
     annotate = frozenset(args.annotate.split(",")) if args.annotate else frozenset()
     unknown_kinds = annotate - ANNOTATION_KINDS
     if unknown_kinds:
@@ -826,6 +849,7 @@ def parse_flags(flags: List[str]) -> Options:
         print_stack_structs=args.print_stack_structs,
         elide_context_struct_decls=args.elide_context_struct_decls,
         glabels_as_labels=args.glabels_as_labels,
+        alloc_container_fns=alloc_container_fns,
         unk_inference=args.unk_inference,
         stack_spill_detection=args.stack_spill_detection,
         passes=args.passes,

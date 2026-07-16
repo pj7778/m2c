@@ -174,6 +174,7 @@ class Options:
     gp_base: Optional[int]
     elide_context_struct_decls: bool
     glabels_as_labels: bool
+    alloc_container_fns: FrozenSet[str]
     annotate: FrozenSet[str]
     goto_patterns: List[str]
     stop_on_error: bool

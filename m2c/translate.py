@@ -304,6 +304,19 @@ class PersistentFunctionState:
     # loose `spNN` scalars. See get_stack_info.
     stack_aggregate_types: Dict[int, Type] = field(default_factory=dict)
 
+    # Allocation-size container typing (see NodeState._maybe_alloc_container_type
+    # and GlobalInfo.find_alloc_container). `alloc_container_probe` records, per
+    # allocator call site (by InstrRef), the weak void* return Type object handed
+    # out on the FIRST pass; by the end of that pass it has unified to whatever
+    # leaf type the local is used as (e.g. a callee param's GsCOORDINATE2*). On a
+    # later pass we read that settled leaf and decide ONCE whether a size-matched
+    # container struct should replace it, caching the container tag (or None) in
+    # `alloc_container_decision` so the choice is stable across all later passes.
+    alloc_container_probe: Dict[InstrRef, Type] = field(default_factory=dict)
+    alloc_container_decision: Dict[InstrRef, Optional[str]] = field(
+        default_factory=dict
+    )
+
 
 @dataclass
 class StackInfo:
@@ -3191,6 +3204,23 @@ def early_unwrap(expr: Expression) -> Expression:
     return expr
 
 
+def _const_int_arg(expr: Expression) -> Optional[int]:
+    """If a call argument is (a wrapped) integer literal, return its value.
+    Peels the CommentExpr/Cast wrappers that call args are built with, plus
+    EvalOnceExpr temp boundaries. Used for allocation-size container typing."""
+    for _ in range(8):
+        if isinstance(expr, CommentExpr):
+            expr = expr.expr
+        elif isinstance(expr, Cast):
+            expr = expr.expr
+        else:
+            unwrapped = early_unwrap(expr)
+            if unwrapped is expr:
+                break
+            expr = unwrapped
+    return expr.value if isinstance(expr, Literal) else None
+
+
 def early_unwrap_ints(expr: Expression) -> Expression:
     """
     Unwrap EvalOnceExpr's, even past variable boundaries or through int Cast's
@@ -3995,6 +4025,78 @@ class NodeState:
                 uw.expr.value
             ] = target
 
+    def _maybe_alloc_container_type(
+        self, call_instr: InstrRef, func_args: List[Expression], default_ret: Type
+    ) -> Type:
+        """For a call to an --alloc-container-fn with a constant size argument,
+        return a pointer to the size-matched container struct instead of the weak
+        void* return, when the allocated local otherwise only unifies to the
+        container's embedded leaf (via a callee parameter). Returns `default_ret`
+        unchanged in every other case.
+
+        Two-pass, mirroring the stack-aggregate path: the leaf a `void*` alloc
+        result is used as is only known after a full pass, so on the first pass we
+        just record the (still-weak) return Type object and hand it out; on a
+        later pass we inspect what it settled to and decide once. This makes the
+        size-matched container win over a mere callee-param unify, while a local
+        whose field/param evidence already gives a complete type (leaf size >=
+        alloc size, or a non-struct) keeps that type -- field-access evidence
+        still beats the size heuristic."""
+        gi = self.stack_info.global_info
+        if not gi.alloc_container_fns:
+            return default_ret
+        tgt = call_instr.instruction.function_target
+        if (
+            not isinstance(tgt, AsmGlobalSymbol)
+            or tgt.symbol_name not in gi.alloc_container_fns
+            or not func_args
+        ):
+            return default_ret
+        alloc_size = _const_int_arg(func_args[0])
+        if alloc_size is None:
+            return default_ret
+
+        ps = self.stack_info.persistent_state
+        probe = ps.alloc_container_probe.get(call_instr)
+        if probe is None:
+            # First pass at this site: hand out the weak void* and remember it so
+            # a later pass can read the leaf it unifies to.
+            ps.alloc_container_probe[call_instr] = default_ret
+            return default_ret
+
+        if call_instr not in ps.alloc_container_decision:
+            ps.alloc_container_decision[call_instr] = self._decide_alloc_container(
+                alloc_size, probe
+            )
+        tag = ps.alloc_container_decision[call_instr]
+        if tag is None:
+            return default_ret
+        container = gi.typepool.get_struct_by_tag_name(tag, gi.typemap)
+        if container is None:
+            return default_ret
+        return Type.ptr(Type.struct(container))
+
+    def _decide_alloc_container(
+        self, alloc_size: int, probe: Type
+    ) -> Optional[str]:
+        """Given the leaf type an alloc result settled to on an earlier pass,
+        return the container struct tag to retype it to, or None to leave it."""
+        leaf = probe.get_pointer_target()
+        if leaf is None or not leaf.is_struct():
+            return None
+        leaf_decl = leaf.get_struct_declaration()
+        if (
+            leaf_decl is None
+            or not leaf_decl.from_context
+            or leaf_decl.size is None
+            or leaf_decl.size >= alloc_size
+        ):
+            return None
+        container = self.stack_info.global_info.find_alloc_container(
+            alloc_size, leaf_decl.size
+        )
+        return container.tag_name if container is not None else None
+
     def _reg_probably_meant_as_function_argument(
         self, reg: Register, call_instr: InstrRef
     ) -> bool:
@@ -4111,9 +4213,10 @@ class NodeState:
         self.subroutine_args.clear()
 
         source = self.regs.current_instr_ref()
-        call: Expression = FuncCall(
-            fn_target, func_args, fn_sig.return_type.weaken_void_ptr()
+        return_type = self._maybe_alloc_container_type(
+            call_instr, func_args, fn_sig.return_type.weaken_void_ptr()
         )
+        call: Expression = FuncCall(fn_target, func_args, return_type)
         call = self._eval_once(
             call,
             emit_exactly_once=True,
@@ -4617,13 +4720,52 @@ class GlobalInfo:
     deterministic_vars: bool
     stack_spill_detection: bool
     annotate: FrozenSet[str] = frozenset()
+    alloc_container_fns: FrozenSet[str] = frozenset()
     global_symbol_map: Dict[str, GlobalSymbol] = field(default_factory=dict)
     persistent_function_state: Dict[str, PersistentFunctionState] = field(
         default_factory=lambda: defaultdict(PersistentFunctionState)
     )
+    # Cache for find_alloc_container: (alloc_size, leaf_size) -> container tag.
+    _alloc_container_cache: Dict[Tuple[int, int], Optional[str]] = field(
+        default_factory=dict
+    )
 
     def get_persistent_function_state(self, func_name: str) -> PersistentFunctionState:
         return self.persistent_function_state[func_name]
+
+    def find_alloc_container(
+        self, alloc_size: int, leaf_size: int
+    ) -> Optional[StructDeclaration]:
+        """Return the unique --context struct that (a) has size `alloc_size` and
+        (b) embeds a struct of size `leaf_size` at offset 0 (a "container" around
+        that leaf). None if there is no such struct or more than one -- ambiguity
+        means the allocation size does not, by itself, name the container, so we
+        leave the type alone. Used by NodeState._maybe_alloc_container_type."""
+        key = (alloc_size, leaf_size)
+        if key in self._alloc_container_cache:
+            tag = self._alloc_container_cache[key]
+            return (
+                self.typepool.get_struct_by_tag_name(tag, self.typemap)
+                if tag is not None
+                else None
+            )
+        matches: List[StructDeclaration] = []
+        for tag_or_ctype in self.typemap.structs:
+            if not isinstance(tag_or_ctype, str):
+                continue
+            decl = self.typepool.get_struct_by_tag_name(tag_or_ctype, self.typemap)
+            if decl is None or decl.size != alloc_size or not decl.fields:
+                continue
+            first = decl.fields[0]
+            if (
+                first.offset == 0
+                and first.type.is_struct()
+                and first.type.get_size_bytes() == leaf_size
+            ):
+                matches.append(decl)
+        chosen = matches[0] if len(matches) == 1 else None
+        self._alloc_container_cache[key] = chosen.tag_name if chosen else None
+        return chosen
 
     def asm_data_value(self, sym_name: str) -> Optional[AsmDataEntry]:
         return self.asm_data.values.get(sym_name)
