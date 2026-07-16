@@ -39,6 +39,7 @@ from .translate import (
     Load3Bytes,
     LocalVar,
     Lwl,
+    Lwr,
     NodeState,
     RawSymbolRef,
     RegExpression,
@@ -542,10 +543,21 @@ def deref_unaligned(
 
 
 def handle_lwl(args: InstrArgs) -> Expression:
-    # Unaligned load for the left part of a register (lwl can technically merge with
-    # a pre-existing lwr, but doesn't in practice, so we treat this as a standard
-    # destination-first operation)
+    # Unaligned load for the left part of a register. If lwr ran first and stored a
+    # Lwr marker (lwr-before-lwl pattern), detect it here and emit UnalignedLoad.
+    # We use get_raw() to bypass the inputs check since lwl doesn't declare its
+    # destination as an input, but we need to read the Lwr marker left by lwr.
     ref = args.memory_ref(1)
+    raw_old = args.regs.get_raw(args.reg_ref(0))
+    if raw_old is not None:
+        uw_old_value = early_unwrap(raw_old)
+        lwr_key: Tuple[int, object]
+        if isinstance(ref, AddressMode):
+            lwr_key = (ref.offset - 3, args.regs[ref.base])
+        else:
+            lwr_key = (ref.offset - 3, ref.sym)
+        if isinstance(uw_old_value, Lwr) and uw_old_value.key[0] == lwr_key[0]:
+            return UnalignedLoad(uw_old_value.load_expr)
     expr = deref_unaligned(ref, args.regs, args.stack_info)
     key: Tuple[int, object]
     if isinstance(ref, AddressMode):
@@ -572,6 +584,16 @@ def handle_lwr(args: InstrArgs) -> Expression:
         else:
             load_expr = deref_unaligned(ref, args.regs, args.stack_info)
         return UnalignedLoad(load_expr)
+    # Also check the reversed-delta pair (lwl at N+3 before lwr at N, PSX/GCC style).
+    # In BE mode delta=-3 fails for this pattern, so try delta=+3 as well.
+    reversed_lwl_key: Tuple[int, object]
+    if isinstance(ref, AddressMode):
+        reversed_lwl_key = (ref.offset - delta, args.regs[ref.base])
+    else:
+        reversed_lwl_key = (ref.offset - delta, ref.sym)
+    if isinstance(uw_old_value, Lwl) and uw_old_value.key[0] == reversed_lwl_key[0]:
+        load_expr = deref_unaligned(ref, args.regs, args.stack_info)
+        return UnalignedLoad(load_expr)
     # IDO may copy 3 bytes between 4-byte-aligned addresses using lwr+swr, e.g. for
     # the purpose of array initializers. Little endian can use lwl+swl instead,
     # but other compilers don't seem to emit this pattern so we don't handle that
@@ -580,7 +602,14 @@ def handle_lwr(args: InstrArgs) -> Expression:
         left_mem_ref = replace(ref, offset=ref.offset - 2)
         load_expr = deref_unaligned(left_mem_ref, args.regs, args.stack_info)
         return Load3Bytes(load_expr)
-    return ErrorExpr("Unable to handle lwr; missing a corresponding lwl")
+    # lwr runs before its paired lwl (lwr-before-lwl pattern). Store a Lwr marker so
+    # handle_lwl can detect the pair and emit UnalignedLoad when it runs.
+    lwr_key: Tuple[int, object]
+    if isinstance(ref, AddressMode):
+        lwr_key = (ref.offset, args.regs[ref.base])
+    else:
+        lwr_key = (ref.offset, ref.sym)
+    return Lwr(deref_unaligned(ref, args.regs, args.stack_info), lwr_key)
 
 
 def make_store(args: InstrArgs, type: Type) -> Optional[StoreStmt]:

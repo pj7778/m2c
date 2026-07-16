@@ -1780,6 +1780,22 @@ class Lwl(Expression):
 
 
 @dataclass(frozen=True)
+class Lwr(Expression):
+    """Temporary marker stored in a register by lwr in little-endian mode.
+    Consumed by the subsequent lwl to emit UnalignedLoad."""
+
+    load_expr: Expression
+    key: Tuple[int, object]
+    type: Type = field(compare=False, default_factory=Type.any_reg)
+
+    def dependencies(self) -> List[Expression]:
+        return [self.load_expr]
+
+    def format(self, fmt: Formatter) -> str:
+        return f"M2C_LWR({self.load_expr.format(fmt)})"
+
+
+@dataclass(frozen=True)
 class Load3Bytes(Expression):
     load_expr: Expression
     type: Type = field(compare=False, default_factory=Type.any_reg)
