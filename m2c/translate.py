@@ -4397,9 +4397,74 @@ def translate_node_body(state: NodeState) -> BlockInfo:
     Given a node and current register contents, return a BlockInfo containing
     the translated AST for that node.
     """
-    for instr_ref in state.node.block.instruction_refs:
+    # MIPS delay-slot hazard: a conditional branch is placed in the block *before*
+    # its delay slot instruction, but the branch condition is only use()d at the end
+    # of the block, below. When the delay slot writes a register the branch READ, the
+    # condition is by then holding a variable that has been reassigned, and we emit C
+    # that tests the new value -- silently wrong output, not merely unmatchable. e.g.
+    #
+    #     bnez  $s2, .L898        ->   var_s2 = 0;                 /* WRONG */
+    #      addu $s2, $zero, $zero      if (var_s2 == 0) {          /* always true */
+    #     j     .L898                      var_s2 = 1;
+    #      ori  $s2, $zero, 0x1     }
+    #
+    # which is the toggle `s2 = !s2` (the branch tests the OLD $s2, the delay slot
+    # runs on both paths). Pin the condition to the pre-delay-slot value in exactly
+    # that case. The gate is syntactic -- outputs of the next instruction against
+    # inputs of the branch -- so functions without the hazard are untouched, and
+    # use() is still called exactly once (see its docstring).
+    instruction_refs = state.node.block.instruction_refs
+    for i, instr_ref in enumerate(instruction_refs):
+        instr = instr_ref.instruction
         with state.regs.set_current_instr(instr_ref):
             evaluate_instruction(instr_ref, state)
+        if (
+            instr.is_conditional
+            and state.branch_condition is not None
+            and i + 1 < len(instruction_refs)
+        ):
+            delay_slot = instruction_refs[i + 1].instruction
+            for loc in delay_slot.outputs:
+                if loc not in instr.inputs:
+                    continue
+                data = state.regs.contents.get(loc)
+                if data is None or not isinstance(
+                    data.value, (PlannedPhiExpr, NaivePhiExpr)
+                ):
+                    # An EvalOnceExpr gets its own variable, so the condition still
+                    # reads the pre-delay-slot value. That case is already correct.
+                    continue
+                if loc not in state.stack_info.global_info.arch.saved_regs:
+                    # A temp register (e.g. the $v0 of a mask-test ladder) is
+                    # rendered with its own carrier variable and comes out correct.
+                    continue
+                if loc in delay_slot.inputs:
+                    # The delay slot reads the register back, e.g. the cursor wrap
+                    # `bnez $s1 / addiu $s1,$s1,-1`. The new value depends on the old
+                    # one, so the emitted test is still meaningful; m2c gets these
+                    # right today.
+                    continue
+                # Callee-saved (a long-lived variable), a phi that cannot be
+                # snapshotted (force() does not apply to phis -- _prevent_later_uses
+                # skips them for the same reason), and the delay slot overwrites it
+                # unconditionally. The condition would render as a re-read of a
+                # variable already reassigned above it, i.e. silently WRONG C.
+                # Refuse, as is already done for the analogous jalr case.
+                raise DecompFailure(
+                    f"The delay slot of {instr.mnemonic} unconditionally overwrites "
+                    f"{loc}, which the branch itself reads, and {loc} holds a "
+                    f"long-lived variable whose old value cannot be preserved.\n\n"
+                    f"The branch tests the value from BEFORE the delay slot, while "
+                    f"the delay slot runs on both paths, so\n"
+                    f"    bnez  $s2, .L1\n"
+                    f"     addu $s2, $zero, $zero\n"
+                    f"    j     .L1\n"
+                    f"     ori  $s2, $zero, 0x1\n"
+                    f"is the toggle 's2 = !s2', which must be written by hand as\n"
+                    f"    if (var != 0) {{ var = 0; }} else {{ var = 1; }}\n\n"
+                    f"m2c previously emitted 'var = 0; if (var == 0) {{ var = 1; }}' "
+                    f"here, which is wrong -- that test can never fail."
+                )
 
     state.to_write = coalesce_unaligned_struct_copies(state.to_write, state.stack_info)
 
