@@ -104,10 +104,20 @@ class IfElseStatement:
         return if_str
 
 
-@dataclass
+@dataclass(repr=False)
 class SwitchIndex:
     context: Context
     node: Node
+
+    def __repr__(self) -> str:
+        # The generated dataclass repr would dump `context`, i.e. the whole
+        # FlowGraph with every Node and Instruction. Interpolating one of these
+        # into an error message produced a 5.3 MB "Decompilation failure" whose
+        # actual sentence was unfindable (seen on a 1539-instruction King's Field
+        # function). Keep it to something a human can read.
+        index = self.context.switch_nodes.get(self.node)
+        where = f"#{index + 1}" if index is not None else "?"
+        return f"<SwitchIndex {where} at node {self.node.name()}>"
 
     def to_comment(self, fmt: Formatter) -> Optional[str]:
         index = self.context.switch_nodes[self.node]
@@ -1086,7 +1096,8 @@ def _case_label_for_switch(context: Context, node: Node, switch_index: SwitchInd
         if idx == switch_index:
             return label
     raise DecompFailure(
-        f"switch {switch_index}: no case label registered for a node in its own case list"
+        f"{switch_index}: no case label registered for node {node.name()} "
+        f"in its own case list. This switch's control flow is not currently supported."
     )
 
 
