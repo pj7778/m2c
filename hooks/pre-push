@@ -1,0 +1,72 @@
+#!/bin/sh
+# Refuse to push this fork until the King's Field corpus oracle has passed.
+#
+# WHY A HOOK AND NOT A README LINE
+# Every defect found in this fork's review was invisible-until-stumbled-on:
+# 7b480c5 shipped a hard failure and a silent 8-case misroute that survived a
+# month with all 451 unit tests green, and its nested-`default:` sibling was hit
+# independently by two people who each hand-patched around it and neither
+# reported it -- the workaround is fast enough that nobody escalates. Guards
+# only change that if something forces them to run. The README names the oracle;
+# a README has never blocked a push.
+#
+# The corpus lives in the KF repo because that is where the 1299 carved
+# functions and the typed context are; this fork cannot run it standalone. So
+# the hook reaches over. If the KF repo is not present -- a clone on another
+# machine, CI, anyone else's checkout -- it warns and allows the push rather
+# than bricking the fork for people who have no corpus.
+#
+#   enable:  git config core.hooksPath hooks
+#   bypass:  git push --no-verify        (deliberate, and it says so in the log)
+#   point elsewhere:  M2C_ORACLE_REPO=/path/to/kingsfield git push
+#
+# Cost is ~1 minute: two ~25s corpus sweeps. That is the price of not shipping a
+# month-long silent divergence again.
+
+set -u
+
+REPO=${M2C_ORACLE_REPO:-"$(cd "$(dirname "$0")/../../../kingsfield" 2>/dev/null && pwd)"}
+
+if [ -z "$REPO" ] || [ ! -f "$REPO/tools/m2c_oracle.py" ]; then
+    echo "pre-push: no King's Field corpus at '${REPO:-../../kingsfield}' -- skipping the oracle." >&2
+    echo "pre-push: set M2C_ORACLE_REPO if it lives elsewhere. Pushing unverified." >&2
+    exit 0
+fi
+
+command -v just >/dev/null 2>&1 || {
+    echo "pre-push: 'just' not found -- skipping the oracle. Pushing unverified." >&2
+    exit 0
+}
+
+fail=0
+
+# Output CHANGED vs the recorded baseline. Exit 1 = regression (something that
+# decompiled before now fails); 3 = baseline stale because the typed context
+# moved, which is not evidence about m2c and must not block.
+echo "pre-push: m2c-check (corpus output vs baseline)..." >&2
+( cd "$REPO" && just m2c-check ) >&2
+case $? in
+    0) ;;
+    3) echo "pre-push: baseline is STALE (context moved) -- not blocking, but nothing was verified." >&2 ;;
+    *) echo "pre-push: REGRESSION -- a function that decompiled before now fails." >&2; fail=1 ;;
+esac
+
+# Output INVALID. This is the axis m2c-check cannot see: invalid C hashes just
+# as stably as valid C, so a defect that was always there stays green forever.
+# Both nested-`default:` instances were exactly that shape.
+echo "pre-push: m2c-validity (structural validity of the output)..." >&2
+if ! ( cd "$REPO" && just m2c-validity ) >&2; then
+    echo "pre-push: m2c emits structurally INVALID C for at least one function." >&2
+    fail=1
+fi
+
+if [ "$fail" -ne 0 ]; then
+    echo "" >&2
+    echo "pre-push: BLOCKED. Fix it, or accept an intended change with" >&2
+    echo "    cd $REPO && just m2c-accept \"<why the output moved>\"" >&2
+    echo "  then push again. To override deliberately: git push --no-verify" >&2
+    exit 1
+fi
+
+echo "pre-push: oracle clean." >&2
+exit 0

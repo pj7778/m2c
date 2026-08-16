@@ -321,6 +321,17 @@ just m2c-vs-upstream    # this fork must never FAIL where upstream m2c succeeds
 If output moved for a good reason, accept it *with that reason*:
 `just m2c-accept "<why>"`. See `kingsfield/tools/m2c_oracle.py`.
 
+Enable the pre-push hook so this is not left to memory:
+
+```sh
+git config core.hooksPath hooks
+```
+
+`hooks/pre-push` runs both corpus checks and BLOCKS the push on a regression or on
+structurally invalid output (~1 minute). It skips with a warning where no corpus is
+present, so a clone on another machine still works; override deliberately with
+`git push --no-verify`.
+
 **The oracle lives in the King's Field repo, not here, so this repo cannot run it
 standalone** — someone has to run it from the corpus side after each commit to this
 fork. That handoff is the weak point: it is where this will rot if it rots. A commit

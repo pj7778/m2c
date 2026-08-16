@@ -18,6 +18,30 @@ directions, and both directions caused real damage on King's Field:
 The end-to-end trigger needs a 93KB function plus a 63KB typed context (it does not
 reproduce without --context, and hand-distilling collapses the shared node before it
 can be emitted early), so the bookkeeping is pinned here directly instead.
+
+WHICH OF THESE ARE REGRESSION GUARDS, AND WHICH ARE ONLY SMOKE TESTS
+-------------------------------------------------------------------
+A test that exercises code INTRODUCED BY the fix cannot fail on the code before
+it -- it errors on a missing attribute instead, or does not run at all. Such a
+test is green, is about the right code, and would have caught nothing. Stating
+which is which here, because the distinction is invisible from a passing run:
+
+  REGRESSION GUARDS -- verified to FAIL against the pre-fix commit c167f4b:
+    test_zero_registrations_does_not_fail      (errors with the original
+                                                "no case label registered for
+                                                node 5 in its own case list")
+    test_all_shared_labels_are_emitted         (fails with "'case 9:' not found
+                                                in 'case 1:\ngoto block_7;'")
+
+  SMOKE TESTS ONLY -- they exercise mark_emitted/switch_stack, which do not
+  exist before f1d9790, so they cannot be run against it:
+    test_case_emitted_inside_a_NESTED_switch_is_foreign
+    test_case_emitted_directly_in_this_switch_stays_put
+
+  The real guard for the nesting rule is the King's Field corpus check
+  `just m2c-validity`, which DOES fail on the pre-fix build and names both
+  offenders (FUN_80038a38 and FUN_80036af0). Corpus over fixture, whenever the
+  fixture would have to be built out of the fix's own vocabulary.
 """
 
 import unittest
