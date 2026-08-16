@@ -55,7 +55,25 @@ class Context:
     )
     goto_nodes: Set[Node] = field(default_factory=set)
     emitted_nodes: Set[Node] = field(default_factory=set)
+    # The switch whose braces a node's body was emitted DIRECTLY inside, or None
+    # for a node at function level. Recorded when the node is emitted, because
+    # that is the only moment the lexical nesting is known.
+    #
+    # A `case N:`/`default:` for switch S is valid C only where S's braces are
+    # the innermost enclosing switch. Emission ORDER cannot decide that: a node
+    # emitted while building S's body can still land inside a switch NESTED in
+    # S, where S's label is invalid ("multiple default labels in one switch").
+    # switch_stack records the nesting so build_switch_statement can ask the
+    # real question instead of approximating it with order.
+    switch_stack: List["SwitchIndex"] = field(default_factory=list)
+    node_switch_owner: Dict[Node, Optional["SwitchIndex"]] = field(default_factory=dict)
     has_warned: bool = False
+
+    def mark_emitted(self, node: Node) -> None:
+        self.emitted_nodes.add(node)
+        self.node_switch_owner[node] = (
+            self.switch_stack[-1] if self.switch_stack else None
+        )
 
     def add_switch(self, node: Node) -> SwitchIndex:
         self.switch_nodes[node] = 0
@@ -446,7 +464,7 @@ def emit_node(context: Context, node: Node, body: Body) -> bool:
             )
     else:
         body.add_statement(LabelStatement(context, node))
-        context.emitted_nodes.add(node)
+        context.mark_emitted(node)
 
     body.add_node(node, comment_empty=True)
     if isinstance(node, ReturnNode):
@@ -1057,7 +1075,8 @@ def build_conditional_subgraph(
     cond, if_node, else_node = cond_result
 
     # Mark nodes that may have comma expressions in `cond` as emitted
-    context.emitted_nodes.update(chained_cond_nodes[1:])
+    for _n in chained_cond_nodes[1:]:
+        context.mark_emitted(_n)
 
     # Build the if & else bodies
     else_body: Optional[Body] = None
@@ -1152,7 +1171,6 @@ def build_switch_statement(
     # shape of the same bug. emit_goto() takes care of registering the plain goto
     # target label (context.goto_nodes) so the foreign site prints a normal
     # `block_N:`/`loop_N:` label our goto can jump to.
-    already_emitted_before_switch = set(context.emitted_nodes)
 
     # If there are any case labels to jump to the `end` node immediately after the
     # switch block, emit them as `case ...: break;` at the start of the switch block
@@ -1178,17 +1196,33 @@ def build_switch_statement(
     next_sorted_cases: List[Optional[Node]] = []
     next_sorted_cases.extend(sorted_cases[1:])
     next_sorted_cases.append(None)
+    # Everything emitted from here until the pop below is lexically inside THIS
+    # switch's braces; nested switches push themselves on top, which is what
+    # lets the owner check above tell "inside me" from "inside a switch of mine".
+    context.switch_stack.append(switch_index)
     for case, next_case in zip(sorted_cases, next_sorted_cases):
         if case is end:
             pass
-        elif case in already_emitted_before_switch and _case_labels_for_switch(
-            context, case, switch_index
+        elif (
+            case in context.emitted_nodes
+            and context.node_switch_owner.get(case) is not switch_index
+            and _case_labels_for_switch(context, case, switch_index)
         ):
-            # Genuinely foreign: this case's real body was fully emitted before
-            # this switch's own body-building ever started (e.g. an ordinary
-            # if/else branch elsewhere in the function that happens to alias one
-            # of this switch's jump-table entries). Emit a goto stub instead of
-            # letting the (invalid, elsewhere-placed) case label stand alone.
+            # FOREIGN: this case's body was emitted somewhere this switch's
+            # braces are not the innermost enclosing switch, so a `case N:` left
+            # sitting there is invalid C. Two ways that happens, and the owner
+            # check catches both:
+            #
+            #   - emitted before this switch started (an ordinary if/else branch
+            #     elsewhere in the function aliasing a jump-table entry), or
+            #   - emitted INSIDE a switch nested within this one. A previous fix
+            #     approximated containment with emission ORDER and missed this
+            #     second case entirely -- an outer switch's `default:` landed
+            #     inside an inner switch, giving "multiple default labels in one
+            #     switch" from gcc, on output that otherwise looked finished.
+            #
+            # Either way, emit a goto stub here (always valid) and unregister, so
+            # the foreign site does not also print the label where it is invalid.
             #
             # Emit EVERY label this switch registered for the node, not just the
             # first: several jump-table entries can share one target, and dropping
@@ -1205,10 +1239,8 @@ def build_switch_statement(
                 if idx != switch_index
             ]
         elif case in context.emitted_nodes:
-            # Emitted earlier, but AFTER this switch's own body-building began --
-            # i.e. by this same switch's own recursive processing of an earlier
-            # case (nested if/switch content, or a fallthrough chain). Still
-            # lexically within this switch's braces; nothing more to do here.
+            # Emitted directly inside THIS switch's braces (owner matches), or it
+            # has no label of ours to place. Either way nothing to do here.
             pass
         elif (
             next_case is not None
@@ -1223,6 +1255,8 @@ def build_switch_statement(
             switch_body.extend(build_flowgraph_between(context, case, end))
             if not switch_body.ends_in_jump():
                 switch_body.add_statement(SimpleStatement("break;", is_jump=True))
+    popped = context.switch_stack.pop()
+    assert popped is switch_index, "switch_stack must nest"
     return SwitchStatement(jump, switch_body, switch_index)
 
 
@@ -1383,7 +1417,7 @@ def build_flowgraph_between(
             default_node = curr_start.conditional_edge
             # switch_guard_expr checked that switch_node has no statements to write,
             # so it is OK to mark it as emitted
-            context.emitted_nodes.add(switch_node)
+            context.mark_emitted(switch_node)
             if curr_end is switch_node:
                 curr_end = switch_node.immediate_postdominator
                 assert curr_end in curr_start.postdominators

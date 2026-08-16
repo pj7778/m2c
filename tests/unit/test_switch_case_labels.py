@@ -110,6 +110,64 @@ class TestSwitchCaseLabels(unittest.TestCase):
         self.assertEqual(text.count("goto "), 1)
         self.assertEqual(context.case_nodes[shared], [])
 
+    def test_case_emitted_inside_a_NESTED_switch_is_foreign(self) -> None:
+        """The direction the emission-order heuristic missed, and the one that
+        produced uncompilable C on King's Field FUN_80038a38.
+
+        A node emitted while building THIS switch's body is not automatically
+        contained: if it landed inside a switch NESTED in this one, our label
+        there is invalid ("multiple default labels in one switch" -- gcc). Only
+        the innermost enclosing switch may place a label, so an outer switch
+        must fall back to a goto stub."""
+        context = _context()
+        end = _node(99)
+        shared = _node(7)
+        outer = context.add_switch(_node(0))
+        inner = context.add_switch(_node(1))
+        context.case_nodes[shared].append((outer, "default"))
+
+        # Emitted while `inner` was the innermost switch being built.
+        context.switch_stack.append(inner)
+        context.mark_emitted(shared)
+        context.switch_stack.pop()
+
+        stmt = build_switch_statement(
+            context,
+            SwitchControl(control_expr=None),  # type: ignore[arg-type]
+            [shared],
+            outer,
+            end,
+        )
+        text = _switch_body_text(stmt)
+        self.assertIn("default:", text)
+        self.assertIn("goto ", text)
+        # ...and unregistered, so the nested site does not ALSO print it there.
+        self.assertEqual(context.case_nodes[shared], [])
+
+    def test_case_emitted_directly_in_this_switch_stays_put(self) -> None:
+        """The converse: owned by THIS switch, so its own label is valid where it
+        already is and no stub is needed. Guards against the fix above
+        over-firing and turning every shared case into a goto."""
+        context = _context()
+        end = _node(99)
+        owned = _node(7)
+        switch_index = context.add_switch(_node(0))
+        context.case_nodes[owned].append((switch_index, "case 1"))
+
+        context.switch_stack.append(switch_index)
+        context.mark_emitted(owned)
+        context.switch_stack.pop()
+
+        stmt = build_switch_statement(
+            context,
+            SwitchControl(control_expr=None),  # type: ignore[arg-type]
+            [owned],
+            switch_index,
+            end,
+        )
+        self.assertNotIn("goto ", _switch_body_text(stmt))
+        self.assertEqual(context.case_nodes[owned], [(switch_index, "case 1")])
+
     def test_other_switches_registrations_are_untouched(self) -> None:
         """Unregistering must be scoped to this switch: a node shared with a
         second switch keeps that switch's label."""
