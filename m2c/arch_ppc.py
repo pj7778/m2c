@@ -89,7 +89,7 @@ from .evaluate import (
     handle_rlwinm,
     handle_rlwnm,
     handle_shift_right,
-    handle_xori,
+    handle_xor,
     load_upper,
     make_store,
     make_storex,
@@ -647,16 +647,8 @@ class LoopStructCopySetupPattern(IrPattern):
         offset = offset.value
         tail_size = 0
 
-        for src in m.ref_map:
-            if (
-                isinstance(src, InstrRef)
-                and src.instruction.mnemonic == "loopstructcopy.fictive"
-            ):
-                ref = m.map_ref(src)
-                break
-        else:
-            assert False, "failed to find mapping for loopstructcopy.fictive"
-
+        ref = m.body[2]
+        assert ref.instruction.mnemonic == "loopstructcopy.fictive"
         dst = m.symbolic_registers["a"]
         src = m.symbolic_registers["b"]
         dst_refs_by_offset = self._by_offset(flow_graph.instr_uses[ref].get(dst))
@@ -1009,6 +1001,7 @@ class PpcArch(Arch):
         function_target: Optional[Argument] = None
         is_conditional = False
         is_return = False
+        is_load = False
         is_store = False
         eval_fn: Optional[Callable[[NodeState, InstrArgs], object]] = None
 
@@ -1206,10 +1199,12 @@ class PpcArch(Arch):
                 assert len(args) == 2 + psq_imms
                 if isinstance(args[1], AsmAddressMode):
                     inputs = make_memory_access(args[1], size) + [args[1].base]
+            is_load = True
             outputs = [args[0]]
             eval_fn = lambda s, a: s.set_reg(a.reg_ref(0), cls.instrs_load[mnemonic](a))
         elif mnemonic in cls.instrs_load_update:
             assert isinstance(args[0], Register) and size is not None
+            is_load = True
             if mnemonic.endswith("x"):
                 assert (
                     len(args) == 3 + psq_imms
@@ -1470,6 +1465,7 @@ class PpcArch(Arch):
             function_target=function_target,
             is_conditional=is_conditional,
             is_return=is_return,
+            is_load=is_load,
             is_store=is_store,
             eval_fn=eval_fn,
         )
@@ -1612,8 +1608,12 @@ class PpcArch(Arch):
         "addc": lambda a: handle_add(a),
         "adde": lambda a: carry_add_to(handle_add(a)),
         "addze": lambda a: carry_add_to(a.reg(1)),
-        "addi": lambda a: handle_addi(a),
-        "addic": lambda a: handle_addi(a),
+        "addi": lambda a: handle_addi(
+            a.reg_ref(0), a.reg_ref(1), a.reg(1), a.s16_imm(2), a
+        ),
+        "addic": lambda a: handle_addi(
+            a.reg_ref(0), a.reg_ref(1), a.reg(1), a.s16_imm(2), a
+        ),
         "addis": lambda a: handle_addis(a),
         "subf": lambda a: fold_divmod(BinaryOp.intptr(a.reg(2), "-", a.reg(1))),
         "subfc": lambda a: fold_divmod(BinaryOp.intptr(a.reg(2), "-", a.reg(1))),
@@ -1652,7 +1652,7 @@ class PpcArch(Arch):
         ),
         "andi": lambda a: BinaryOp.int(a.reg(1), "&", a.u16_imm(2)),
         "andis": lambda a: BinaryOp.int(a.reg(1), "&", a.shifted_u16_imm(2)),
-        "xori": lambda a: handle_xori(a),
+        "xori": lambda a: handle_xor(a.reg(1), a.u16_imm(2)),
         "xoris": lambda a: BinaryOp.int(a.reg(1), "^", a.shifted_u16_imm(2)),
         "cmpnez.fictive": lambda a: handle_cmpnez(a.reg(1)),
         "cmpne.fictive": lambda a: BinaryOp.icmp(a.reg(1), "!=", a.reg(2)),
@@ -1674,22 +1674,8 @@ class PpcArch(Arch):
         "slw": lambda a: fold_mul_chains(
             BinaryOp.int(a.reg(1), "<<", as_intish(a.reg(2)))
         ),
-        "srw": lambda a: fold_divmod(
-            BinaryOp(
-                as_uintish(a.reg(1)),
-                ">>",
-                as_intish(a.reg(2)),
-                type=Type.u32(),
-            )
-        ),
-        "sraw": lambda a: fold_divmod(
-            BinaryOp(
-                as_sintish(a.reg(1)),
-                ">>",
-                as_intish(a.reg(2)),
-                type=Type.s32(),
-            )
-        ),
+        "srw": lambda a: fold_divmod(BinaryOp.ushift(a.reg(1), ">>", a.reg(2))),
+        "sraw": lambda a: fold_divmod(BinaryOp.sshift(a.reg(1), ">>", a.reg(2))),
         "srawi": lambda a: handle_shift_right(a, signed=True),
         "extsb": lambda a: as_type(a.reg(1), Type.s8(), silent=False),
         "extsh": lambda a: as_type(a.reg(1), Type.s16(), silent=False),

@@ -54,7 +54,6 @@ from .translate import (
     Arch,
     BinaryOp,
     CarryBit,
-    Cast,
     Condition,
     ErrorExpr,
     ExprStmt,
@@ -98,6 +97,7 @@ from .evaluate import (
     handle_sll,
     handle_sub,
     handle_sub_arm,
+    handle_xor,
     make_store,
     make_store_real,
     replace_bitand,
@@ -673,9 +673,9 @@ class ConditionalInstrPattern(AsmPattern):
                     AsmInstruction(b_mn, [AsmGlobalSymbol(label1)]),
                     *if_instrs,
                     AsmInstruction("b", [AsmGlobalSymbol(label2)]),
-                    Label([label1]),
+                    Label.new(label1),
                     *else_instrs,
-                    Label([label2]),
+                    Label.new(label2),
                     *after_instrs,
                 ],
                 i,
@@ -686,7 +686,7 @@ class ConditionalInstrPattern(AsmPattern):
                     *before_instrs,
                     AsmInstruction(b_mn, [AsmGlobalSymbol(label1)]),
                     *if_instrs,
-                    Label([label1]),
+                    Label.new(label1),
                     *after_instrs,
                 ],
                 i,
@@ -889,7 +889,7 @@ class ShiftedRegPattern(AsmPattern):
 class PopAndReturnPattern(SimpleAsmPattern):
     pattern = make_pattern(
         "pop {x}",
-        "add sp, sp, 0x10?",
+        "add $sp, $sp, N?",
         "bx $x",
     )
 
@@ -1862,7 +1862,7 @@ class ArmArch(Arch):
         "mvn": lambda a: handle_bitinv(a.reg_or_imm(1)),
         "and": lambda a: replace_bitand(BinaryOp.int(a.reg(1), "&", a.reg_or_imm(2))),
         "orr": lambda a: handle_or(a.reg(1), a.reg_or_imm(2), is_arm=True),
-        "eor": lambda a: BinaryOp.int(a.reg(1), "^", a.reg_or_imm(2)),
+        "eor": lambda a: handle_xor(a.reg(1), a.reg_or_imm(2)),
         "bic": lambda a: BinaryOp.int(a.reg(1), "&", UnaryOp.int("~", a.reg_or_imm(2))),
         "orn": lambda a: BinaryOp.int(a.reg(1), "|", UnaryOp.int("~", a.reg_or_imm(2))),
     }

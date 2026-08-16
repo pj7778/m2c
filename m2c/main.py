@@ -58,6 +58,7 @@ def print_exception(exc: Exception, sanitize: bool) -> None:
             tb = tb.__cause__
         for frame in tb.stack:
             frame.lineno = 0
+            frame.end_lineno = 0
             frame.filename = Path(frame.filename).name
         for line in tb.format(chain=False):
             print(line, end="")
@@ -138,6 +139,10 @@ def run(options: Options) -> int:
     if not options.function_indexes_or_names:
         functions = list(all_functions.values())
     else:
+        functions_by_c_name = {
+            arch.c_symbol_name(name): function
+            for name, function in all_functions.items()
+        }
         functions = []
         for index_or_name in options.function_indexes_or_names:
             if isinstance(index_or_name, int):
@@ -150,10 +155,13 @@ def run(options: Options) -> int:
                     return 1
                 functions.append(list(all_functions.values())[index_or_name])
             else:
-                if index_or_name not in all_functions:
+                function = all_functions.get(index_or_name)
+                if function is None:
+                    function = functions_by_c_name.get(index_or_name)
+                if function is None:
                     print(f"Function {index_or_name} not found.", file=sys.stderr)
                     return 1
-                functions.append(all_functions[index_or_name])
+                functions.append(function)
 
     fmt = options.formatter()
     function_names = set(all_functions.keys())
@@ -611,10 +619,13 @@ def parse_flags(flags: List[str]) -> Options:
         type=Target.parse,
         default="mips-ido-c",
         help="Target platform, compiler, and language triple. "
-        "Supported platforms: [mips, mipsel, mipsee, ppc, arm, gba]. "
-        "Supported compilers: [ido, gcc, mwcc]. "
+        "Only platform needs to be provided. "
+        "Supported platforms: [mips, mipsel, mipsee, ppc, arm, gba, sh2]. "
+        "Supported compilers: [ido, gcc, mwcc] "
         "Supported languages: [c, c++]. "
-        "Default is mips-ido-c, `ppc` is an alias for ppc-mwcc-c++, and `arm` for arm-gcc-c.",
+        "Defaults to mips-ido-c. "
+        "If compiler is not provided, it defaults to ido for mips, mwcc for ppc, otherwise gcc. "
+        "If language is not provided, it defaults to c++ for mwcc, otherwise c.",
     )
     group.add_argument(
         "--passes",

@@ -81,7 +81,7 @@ from .evaluate import (
     handle_add_double,
     handle_add_float,
     handle_add_real,
-    handle_addi,
+    handle_addi_mips,
     handle_bgez,
     handle_conditional_move,
     handle_convert,
@@ -94,7 +94,7 @@ from .evaluate import (
     handle_shift_right,
     handle_sltiu,
     handle_sltu,
-    handle_xori,
+    handle_xor,
     handle_swl,
     handle_swr,
     imm_add_32,
@@ -997,6 +997,7 @@ class MipsArch(Arch):
         is_branch_likely = False
         is_conditional = False
         is_return = False
+        is_load = False
         is_store = False
         eval_fn: Optional[Callable[[NodeState, InstrArgs], object]] = None
 
@@ -1284,6 +1285,7 @@ class MipsArch(Arch):
             elif mnemonic.startswith("l") and size is not None:
                 # Load instructions
                 assert len(args) == 2
+                is_load = True
                 inputs = make_memory_access(args[1])
                 if isinstance(args[1], AsmAddressMode):
                     inputs.append(args[1].base)
@@ -1396,6 +1398,7 @@ class MipsArch(Arch):
             is_branch_likely=is_branch_likely,
             is_conditional=is_conditional,
             is_return=is_return,
+            is_load=is_load,
             is_store=is_store,
             eval_fn=eval_fn,
         )
@@ -1628,8 +1631,8 @@ class MipsArch(Arch):
         "sltu": lambda a: handle_sltu(a),
         "sltiu": lambda a: handle_sltiu(a),
         # Integer arithmetic
-        "addi": lambda a: handle_addi(a),
-        "addiu": lambda a: handle_addi(a),
+        "addi": lambda a: handle_addi_mips(a),
+        "addiu": lambda a: handle_addi_mips(a),
         "add": lambda a: handle_add(a),
         "addu": lambda a: handle_add(a),
         "sub": lambda a: (
@@ -1638,17 +1641,13 @@ class MipsArch(Arch):
         "subu": lambda a: (
             fold_mul_chains(fold_divmod(BinaryOp.intptr(a.reg(1), "-", a.reg(2))))
         ),
-        "negu": lambda a: fold_mul_chains(
-            UnaryOp.sint("-", a.reg(1)),
-        ),
-        "neg": lambda a: fold_mul_chains(
-            UnaryOp.sint("-", a.reg(1)),
-        ),
+        "negu": lambda a: fold_mul_chains(UnaryOp.sint("-", a.reg(1))),
+        "neg": lambda a: fold_mul_chains(UnaryOp.sint("-", a.reg(1))),
         "div.fictive": lambda a: BinaryOp.sint(a.reg(1), "/", a.full_imm(2)),
         "mod.fictive": lambda a: BinaryOp.sint(a.reg(1), "%", a.full_imm(2)),
         # 64-bit integer arithmetic, treated mostly the same as 32-bit for now
-        "daddi": lambda a: handle_addi(a),
-        "daddiu": lambda a: handle_addi(a),
+        "daddi": lambda a: handle_addi_mips(a),
+        "daddiu": lambda a: handle_addi_mips(a),
         "daddu": lambda a: handle_add(a),
         "dsubu": lambda a: fold_mul_chains(BinaryOp.intptr(a.reg(1), "-", a.reg(2))),
         "dnegu": lambda a: fold_mul_chains(
@@ -1700,39 +1699,14 @@ class MipsArch(Arch):
         ),
         "xor": lambda a: BinaryOp.int(a.reg(1), "^", a.reg(2)),
         "andi": lambda a: BinaryOp.int(a.reg(1), "&", a.u16_imm(2)),
-        "xori": lambda a: handle_xori(a),
+        "xori": lambda a: handle_xor(a.reg(1), a.u16_imm(2)),
         # Shifts
-        "sll": lambda a: fold_mul_chains(
-            BinaryOp.int(a.reg(1), "<<", as_intish(a.s16_imm(2)))
-        ),
-        "sllv": lambda a: fold_mul_chains(
-            BinaryOp.int(a.reg(1), "<<", as_intish(a.reg(2)))
-        ),
-        "srl": lambda a: fold_divmod(
-            BinaryOp(
-                as_uintish(a.reg(1)),
-                ">>",
-                as_intish(a.s16_imm(2)),
-                type=Type.u32(),
-            )
-        ),
-        "srlv": lambda a: fold_divmod(
-            BinaryOp(
-                as_uintish(a.reg(1)),
-                ">>",
-                as_intish(a.reg(2)),
-                type=Type.u32(),
-            )
-        ),
+        "sll": lambda a: fold_mul_chains(BinaryOp.int(a.reg(1), "<<", a.s16_imm(2))),
+        "sllv": lambda a: fold_mul_chains(BinaryOp.int(a.reg(1), "<<", a.reg(2))),
+        "srl": lambda a: fold_divmod(BinaryOp.ushift(a.reg(1), ">>", a.s16_imm(2))),
+        "srlv": lambda a: fold_divmod(BinaryOp.ushift(a.reg(1), ">>", a.reg(2))),
         "sra": lambda a: handle_shift_right(a, signed=True),
-        "srav": lambda a: fold_divmod(
-            BinaryOp(
-                as_sintish(a.reg(1)),
-                ">>",
-                as_intish(a.reg(2)),
-                type=Type.s32(),
-            )
-        ),
+        "srav": lambda a: fold_divmod(BinaryOp.sshift(a.reg(1), ">>", a.reg(2))),
         # 64-bit shifts
         "dsll": lambda a: fold_mul_chains(
             BinaryOp.int64(a.reg(1), "<<", as_intish(a.s16_imm(2)))
