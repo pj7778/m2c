@@ -1298,9 +1298,31 @@ def array_access_from_add(
             # This acts as a backup, and will usually succeed
             target_type.unify(inner_type)
 
-    if target_type.get_size_bytes() == scale:
+    elem_size = target_type.get_size_bytes()
+    if elem_size == scale:
         # base[index]
         pass
+    elif elem_size is not None and elem_size > 1 and scale % elem_size == 0:
+        # The asm's byte stride is a whole multiple of the element size, e.g. an
+        # `s16` array walked 8 bytes at a time. Previously this fell through to
+        # the sub-array path, failed, and returned None -- and the caller's
+        # fallback is raw pointer arithmetic, where C rescales the BYTE offset by
+        # the element size all over again. Measured: `s16 KnownArr[]` with an
+        # 8-byte stride emitted `*(KnownArr + (arg0 * 8))`, which advances
+        # arg0 * 16 bytes. Silently 2x wrong on a fully typed symbol, and it
+        # compiles clean.
+        #
+        # Fold the ratio into the index instead, so C's own scaling reproduces
+        # the asm's stride exactly: `KnownArr[arg0 * 4]`.
+        #
+        # `> 1`, not `> 0`: for a byte-sized (or unknown, 1-byte) pointee, C's
+        # scaling is the identity, so the old raw-pointer form already computed
+        # the right address. Folding there would only respell working output and
+        # churn 15 more functions in the corpus for no correctness gain.
+        ratio = scale // elem_size
+        if ratio != 1:
+            index = BinaryOp.int(left=index, op="*", right=Literal(ratio))
+        scale = elem_size
     else:
         # base->subarray[index]
         sub_path, sub_type, remaining_offset = base.type.get_deref_field(
