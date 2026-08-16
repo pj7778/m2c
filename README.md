@@ -321,6 +321,12 @@ just m2c-vs-upstream    # this fork must never FAIL where upstream m2c succeeds
 If output moved for a good reason, accept it *with that reason*:
 `just m2c-accept "<why>"`. See `kingsfield/tools/m2c_oracle.py`.
 
+**The oracle lives in the King's Field repo, not here, so this repo cannot run it
+standalone** — someone has to run it from the corpus side after each commit to this
+fork. That handoff is the weak point: it is where this will rot if it rots. A commit
+here that nobody checks from over there is exactly the month-long silent divergence
+that motivated the oracle in the first place.
+
 ### Running Decompilation Project Tests
 
 It's possible to use the entire corpus of assembly files from decompilation projects as regression tests.
