@@ -13,7 +13,6 @@ from typing import (
     Union,
 )
 
-from .error import DecompFailure
 from .flow_graph import (
     BasicNode,
     ConditionalNode,
@@ -1086,19 +1085,24 @@ def emit_return(context: Context, node: ReturnNode, body: Body) -> None:
         body.add_statement(SimpleStatement("return;", is_jump=True))
 
 
-def _case_label_for_switch(context: Context, node: Node, switch_index: SwitchIndex) -> str:
-    """Look up the case-label text this specific switch registered for `node` via
-    add_labels_for_switch. Every node reachable here as a `case` of `switch_index`
-    must have exactly one such registration (it's how it became a case in the
-    first place), so absence would be an internal inconsistency, not a normal
-    "not found" case -- fail loudly rather than silently synthesizing a label."""
-    for idx, label in context.case_nodes[node]:
-        if idx == switch_index:
-            return label
-    raise DecompFailure(
-        f"{switch_index}: no case label registered for node {node.name()} "
-        f"in its own case list. This switch's control flow is not currently supported."
-    )
+def _case_labels_for_switch(
+    context: Context, node: Node, switch_index: SwitchIndex
+) -> List[str]:
+    """All case-label texts this specific switch registered for `node` via
+    add_labels_for_switch.
+
+    The count is 0, 1, or many -- do NOT assume exactly one:
+
+    - 0: add_labels_for_switch deliberately skips registering a target that is an
+      empty goto to the default node or to the switch's postdominator, and only
+      restores those skipped labels when the switch has fewer than 5 real ones.
+      Such a node is still in `cases`, so it reaches build_switch_statement with
+      nothing registered. It has no label to emit here, and the plain `default:`/
+      fallthrough handles it -- there is nothing to do.
+    - many: several jump-table entries can share one target node (`case 1: case 2:`),
+      each registering its own label.
+    """
+    return [label for idx, label in context.case_nodes[node] if idx == switch_index]
 
 
 def build_switch_statement(
@@ -1177,17 +1181,23 @@ def build_switch_statement(
     for case, next_case in zip(sorted_cases, next_sorted_cases):
         if case is end:
             pass
-        elif case in already_emitted_before_switch:
+        elif case in already_emitted_before_switch and _case_labels_for_switch(
+            context, case, switch_index
+        ):
             # Genuinely foreign: this case's real body was fully emitted before
             # this switch's own body-building ever started (e.g. an ordinary
             # if/else branch elsewhere in the function that happens to alias one
             # of this switch's jump-table entries). Emit a goto stub instead of
             # letting the (invalid, elsewhere-placed) case label stand alone.
-            case_label = _case_label_for_switch(context, case, switch_index)
+            #
+            # Emit EVERY label this switch registered for the node, not just the
+            # first: several jump-table entries can share one target, and dropping
+            # the rest would silently send those values to `default:` instead.
             comments = [lambda fmt: switch_index.to_comment(fmt)]
-            switch_body.add_statement(
-                SimpleStatement(f"{case_label}:", comments=comments, indent=-1)
-            )
+            for case_label in _case_labels_for_switch(context, case, switch_index):
+                switch_body.add_statement(
+                    SimpleStatement(f"{case_label}:", comments=comments, indent=-1)
+                )
             emit_goto(context, case, switch_body)
             context.case_nodes[case] = [
                 (idx, lbl)

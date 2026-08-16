@@ -23,6 +23,9 @@ s32 test(s32 arg0) {
         case 0x66: // switch 1
             goto block_21;
         case 0x67: // switch 1
+        case 0x68: // switch 1
+        case 0x69: // switch 1
+        case 0x6A: // switch 1
             goto block_22;
         default: // switch 1
             goto block_23;
