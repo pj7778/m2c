@@ -65,6 +65,10 @@ class Context:
     # S, where S's label is invalid ("multiple default labels in one switch").
     # switch_stack records the nesting so build_switch_statement can ask the
     # real question instead of approximating it with order.
+    # Nodes that were given a LabelStatement, i.e. that CAN be goto'd. Not the
+    # same as emitted_nodes: the chained-condition and switch-guard paths mark
+    # nodes emitted without placing a label.
+    labeled_nodes: Set[Node] = field(default_factory=set)
     switch_stack: List["SwitchIndex"] = field(default_factory=list)
     node_switch_owner: Dict[Node, Optional["SwitchIndex"]] = field(default_factory=dict)
     has_warned: bool = False
@@ -464,6 +468,7 @@ def emit_node(context: Context, node: Node, body: Body) -> bool:
             )
     else:
         body.add_statement(LabelStatement(context, node))
+        context.labeled_nodes.add(node)
         context.mark_emitted(node)
 
     body.add_node(node, comment_empty=True)
@@ -1207,6 +1212,14 @@ def build_switch_statement(
             case in context.emitted_nodes
             and context.node_switch_owner.get(case) is not switch_index
             and _case_labels_for_switch(context, case, switch_index)
+            # ...and the target actually carries a LabelStatement to jump to.
+            # Not every emitted node does: the chained-condition and switch-guard
+            # paths mark nodes emitted without one, and a goto to such a node
+            # dangles -- `goto block_33;` with no block_33 anywhere, gcc "label
+            # used but not defined", on FUN_80049480. Node TYPE is the wrong
+            # test here (FUN_80038a38's genuine foreign case is a ReturnNode
+            # too); what matters is whether a label was ever placed.
+            and case in context.labeled_nodes
         ):
             # FOREIGN: this case's body was emitted somewhere this switch's
             # braces are not the innermost enclosing switch, so a `case N:` left

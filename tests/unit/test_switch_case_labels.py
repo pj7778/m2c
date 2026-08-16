@@ -38,6 +38,10 @@ which is which here, because the distinction is invisible from a passing run:
     test_case_emitted_inside_a_NESTED_switch_is_foreign
     test_case_emitted_directly_in_this_switch_stays_put
 
+  A node is only foreign if it ALSO carries a label to jump to -- these
+  fixtures must add to `labeled_nodes` as well as `emitted_nodes`, because real
+  emission (emit_node) does both, and a goto to an unlabelled node dangles.
+
   The real guard for the nesting rule is the King's Field corpus check
   `just m2c-validity`, which DOES fail on the pre-fix build and names both
   offenders (FUN_80038a38 and FUN_80036af0). Corpus over fixture, whenever the
@@ -115,6 +119,7 @@ class TestSwitchCaseLabels(unittest.TestCase):
         switch_index = context.add_switch(switch_node)
 
         context.emitted_nodes.add(shared)
+        context.labeled_nodes.add(shared)  # emit_node does both; see Context
         for label in ("case 1", "case 9", "case 10"):
             context.case_nodes[shared].append((switch_index, label))
 
@@ -153,6 +158,7 @@ class TestSwitchCaseLabels(unittest.TestCase):
         # Emitted while `inner` was the innermost switch being built.
         context.switch_stack.append(inner)
         context.mark_emitted(shared)
+        context.labeled_nodes.add(shared)  # emit_node does both; see Context
         context.switch_stack.pop()
 
         stmt = build_switch_statement(
@@ -202,6 +208,7 @@ class TestSwitchCaseLabels(unittest.TestCase):
         other_index = context.add_switch(_node(1))
 
         context.emitted_nodes.add(shared)
+        context.labeled_nodes.add(shared)  # emit_node does both; see Context
         context.case_nodes[shared].append((switch_index, "case 1"))
         context.case_nodes[shared].append((other_index, "case 2"))
 
