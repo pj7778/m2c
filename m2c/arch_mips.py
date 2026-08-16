@@ -1185,9 +1185,18 @@ class MipsArch(Arch):
         elif mnemonic in cls.instrs_cop2_write_gpr:
             assert len(args) >= 1 and isinstance(args[0], Register)
             outputs = [args[0]]
-            eval_fn = lambda s, a, mn=mnemonic: s.set_reg(
+            # emit_exactly_once: a GTE register read is NOT a pure value that can
+            # be dropped when dead. The PS1 GTE has a result-latency hazard, so
+            # SDK macros deliberately read the same register twice (KF's matched
+            # gte_AverageZ3 contains "mfc2 %0,$7;" "mfc2 %0,$7;"). The second read
+            # overwrites the first before it is used, so as an ordinary value the
+            # first is dead and m2c dropped it -- silently emitting one
+            # instruction fewer than the asm, in 31 King's Field functions. Use
+            # the same flag a function call uses, so an unused read still emits.
+            eval_fn = lambda s, a, mn=mnemonic: s.set_reg_real(
                 a.reg_ref(0),
                 GteReadExpr(mnemonic=mn, reg=str(a.raw_arg(1)).lstrip("$"), type=Type.s32()),
+                emit_exactly_once=True,
             )
         elif mnemonic == "swc2":
             # Store a GTE/cop2 data register to memory. `args[0]` is not a GPR;
