@@ -1173,6 +1173,39 @@ class ErrorExpr(Condition):
 
 
 @dataclass(frozen=True, eq=False)
+class GteCallExpr(Expression):
+    """A COP2 (GTE) write or operation, emitted as a call: GTE_MTC2(v, 30),
+    GTE_RTPS(), GTE_MVMVA(1, 0, 0, 0, 0).
+
+    The mirror of GteReadExpr below, which already renders the READ side as
+    GTE_MFC2(n). Before this existed the write side and all 25 GTE operations
+    were dropped to a `/* GTE: ... */` comment, which is not merely incomplete
+    -- the write vanishes, so the emitted body is silently WRONG rather than
+    obviously unfinished.
+
+    Names are deliberately generic (GTE_<MNEMONIC>), not any one project's
+    macro set: m2c cannot know whether a consumer spells this gte_ldv0 or
+    GTE_LWC2, and a project maps these to its own header exactly as it already
+    does for GTE_MFC2. `args` holds Expressions (a GPR's value, a dereferenced
+    load) and bare strings (a cop2 register number, an immediate field) side by
+    side; only the Expressions are dependencies."""
+
+    mnemonic: str
+    args: Tuple[Union[Expression, str], ...]
+    type: Type = field(compare=False)
+    cop: str = "GTE"
+
+    def dependencies(self) -> List[Expression]:
+        return [a for a in self.args if isinstance(a, Expression)]
+
+    def format(self, fmt: Formatter) -> str:
+        parts = [
+            format_expr(a, fmt) if isinstance(a, Expression) else a for a in self.args
+        ]
+        return f"{self.cop}_{self.mnemonic.upper()}({', '.join(parts)})"
+
+
+@dataclass(frozen=True, eq=False)
 class GteReadExpr(Expression):
     """Read from a COP register — emits GTE_MFC2(n), COP0_MFC0(n), etc."""
     mnemonic: str

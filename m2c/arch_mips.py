@@ -50,6 +50,7 @@ from .translate import (
     CommentStmt,
     ErrorExpr,
     GteReadExpr,
+    GteCallExpr,
     ExprStmt,
     Expression,
     InstrArgs,
@@ -88,6 +89,7 @@ from .evaluate import (
     handle_la,
     handle_lw,
     handle_load,
+    deref,
     handle_lwl,
     handle_lwr,
     handle_or,
@@ -1214,6 +1216,56 @@ class MipsArch(Arch):
                 if store is not None:
                     s.store_memory(store, a.reg_ref(0))
 
+        elif mnemonic in cls.instrs_cop2_write_gte:
+            # Write a GPR into a GTE data (mtc2) or control (ctc2) register.
+            # The exact mirror of the mfc2/cfc2 read path above: args[1] is the
+            # cop2 register NUMBER, not a GPR, so only args[0] is an input.
+            assert len(args) == 2 and isinstance(args[0], Register)
+            inputs = [args[0]]
+            eval_fn = lambda s, a, mn=mnemonic: s.write_statement(
+                ExprStmt(
+                    GteCallExpr(
+                        mnemonic=mn,
+                        args=(a.reg(0), str(a.raw_arg(1)).lstrip("$")),
+                        type=Type.void(),
+                    )
+                )
+            )
+        elif mnemonic == "lwc2":
+            # Load a word from memory straight into a GTE data register -- the
+            # mirror of the swc2 store above, and the most common cop2 op in a
+            # real PS1 game (227 uses in King's Field's game EXE alone). args[0]
+            # is the cop2 register number, so this reads memory and writes NO
+            # GPR; `deref` rather than handle_load, which would take args[0] as
+            # a destination GPR ref.
+            assert isinstance(args[0], Register)
+            is_load = True
+            inputs = make_memory_access(args[1])
+            if isinstance(args[1], AsmAddressMode):
+                inputs.append(args[1].base)
+            eval_fn = lambda s, a: s.write_statement(
+                ExprStmt(
+                    GteCallExpr(
+                        mnemonic="lwc2",
+                        args=(
+                            str(a.raw_arg(0)).lstrip("$"),
+                            deref(a.memory_ref(1), a.regs, a.stack_info, size=4),
+                        ),
+                        type=Type.void(),
+                    )
+                )
+            )
+        elif mnemonic in cls.instrs_cop2_op:
+            # A GTE operation (rtps, nclip, mvmva, ...). These take no GPRs at
+            # all -- they read and write the GTE's own register file, which the
+            # surrounding mtc2/lwc2/mfc2 traffic makes visible. Any operands are
+            # immediate control fields (mvmva's sf/mx/v/cv/lm, the sf bit on
+            # gpf/gpl/sqr), so they are passed through verbatim.
+            eval_fn = lambda s, a, mn=mnemonic, ags=tuple(
+                str(x) for x in args
+            ): s.write_statement(
+                ExprStmt(GteCallExpr(mnemonic=mn, args=ags, type=Type.void()))
+            )
         elif mnemonic in cls.instrs_cop2_comment:
             inputs = [r for r in args if isinstance(r, Register)]
             for arg in args:
@@ -1434,6 +1486,8 @@ class MipsArch(Arch):
         "nop",
     }
     instrs_cop2_write_gpr: Set[str] = set()
+    instrs_cop2_write_gte: Set[str] = set()
+    instrs_cop2_op: Set[str] = set()
     instrs_cop2_comment: Set[str] = set()
     instrs_store: StoreInstrMap = {
         # Storage instructions
@@ -2256,11 +2310,21 @@ class MipseeArch(MipsArch):
 
 
 class MipsPsxArch(MipsArch):
-    instrs_cop2_write_gpr: Set[str] = {"mfc2", "cfc2"}
-    instrs_cop2_comment: Set[str] = {
-        "mtc2", "ctc2", "lwc2",
-        "cop2", "nclip", "rtps", "rtpt", "mvmva",
+    # COP2 = the GTE, the PS1's geometry unit. Three directions, all needed:
+    # a body that keeps only the reads is silently wrong, not just unfinished.
+    instrs_cop2_write_gpr: Set[str] = {"mfc2", "cfc2"}   # cop2 -> GPR  (read)
+    instrs_cop2_write_gte: Set[str] = {"mtc2", "ctc2"}   # GPR  -> cop2 (write)
+    # The GTE operations. No GPR operands -- they work on the GTE's own register
+    # file, which the surrounding mtc2/lwc2/mfc2 traffic already makes visible.
+    # Operands, where present, are immediate control fields: mvmva takes
+    # sf,mx,v,cv,lm and gpf/gpl/sqr take the sf shift bit.
+    instrs_cop2_op: Set[str] = {
+        "rtps", "rtpt", "nclip", "mvmva",
         "ncds", "ncdt", "nccs", "ncct", "nct", "ncs", "ncc",
         "dpcs", "dpct", "intpl", "cdp", "cc",
         "avsz3", "avsz4", "sqr", "dcpl", "op", "gpf", "gpl",
     }
+    # Anything still genuinely unmodelled. `cop2` is the raw escape hatch: its
+    # operand is a 25-bit command word, so without decoding it there is nothing
+    # honest to emit but the instruction itself.
+    instrs_cop2_comment: Set[str] = {"cop2"}
