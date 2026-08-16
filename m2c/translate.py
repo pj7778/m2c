@@ -2532,6 +2532,27 @@ class StoreStmt(Statement):
 
 
 @dataclass
+class CopStoreStmt(StoreStmt):
+    """A cop2 register stored straight to memory (`swc2 $25, 0($a1)`).
+
+    A real StoreStmt -- it goes through store_memory, so the write is tracked
+    and the destination is typed exactly as before -- that FORMATS as a single
+    intrinsic, `GTE_SWC2(25, dest)`, instead of `dest = GTE_MFC2(25)`.
+
+    The read-plus-store form is semantically exact and misleading to a matcher:
+    it renders ONE machine instruction as C that compiles to two (mfc2 + sw), so
+    counting statements against the asm silently over-counts. It was also
+    asymmetric with the load side, which already emits GTE_LWC2(reg, mem) one
+    for one."""
+
+    reg: str = ""
+    cop: str = "GTE"
+
+    def format(self, fmt: Formatter) -> str:
+        return f"{self.cop}_SWC2({self.reg}, {format_expr(self.dest, fmt)});"
+
+
+@dataclass
 class CommentStmt(Statement):
     contents: str
 

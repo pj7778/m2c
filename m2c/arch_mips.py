@@ -50,6 +50,7 @@ from .translate import (
     CommentStmt,
     ErrorExpr,
     GteReadExpr,
+    CopStoreStmt,
     cop_decl_for,
     GteCallExpr,
     ExprStmt,
@@ -1220,9 +1221,10 @@ class MipsArch(Arch):
                 inputs.append(args[1].base)
 
             def eval_fn(s: NodeState, a: InstrArgs) -> None:
-                source_val = _cop(a, GteReadExpr(
-                    mnemonic="mfc2", reg=str(a.raw_arg(0)).lstrip("$"), type=Type.s32()
-                ))
+                reg = str(a.raw_arg(0)).lstrip("$")
+                source_val = GteReadExpr(
+                    mnemonic="mfc2", reg=reg, type=Type.s32()
+                )
                 store = make_store_real(
                     source_val,
                     None,
@@ -1232,7 +1234,19 @@ class MipsArch(Arch):
                     Type.reg32(likely_float=False),
                 )
                 if store is not None:
-                    s.store_memory(store, a.reg_ref(0))
+                    # Same store -- tracked, destination typed -- but rendered as
+                    # one intrinsic, symmetric with GTE_LWC2 on the load side.
+                    # `dest = GTE_MFC2(n)` renders one instruction as C that
+                    # compiles to two.
+                    a.stack_info.global_info.cop_intrinsics["GTE_SWC2"] = (
+                        "void GTE_SWC2(s32, s32);"
+                    )
+                    s.store_memory(
+                        CopStoreStmt(
+                            source=store.source, dest=store.dest, reg=reg
+                        ),
+                        a.reg_ref(0),
+                    )
 
         elif mnemonic in cls.instrs_cop2_write_gte:
             # Write a GPR into a GTE data (mtc2) or control (ctc2) register.
