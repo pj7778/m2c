@@ -50,6 +50,7 @@ from .translate import (
     CommentStmt,
     ErrorExpr,
     GteReadExpr,
+    cop_decl_for,
     GteCallExpr,
     ExprStmt,
     Expression,
@@ -771,6 +772,14 @@ class TailCallPattern(AsmPattern):
         return None
 
 
+
+def _cop(a: "InstrArgs", expr: Expression) -> Expression:
+    """Register a synthesized COP intrinsic so global_decls can declare it."""
+    name, decl = cop_decl_for(expr)
+    a.stack_info.global_info.cop_intrinsics[name] = decl
+    return expr
+
+
 class MipsArch(Arch):
     arch = Target.ArchEnum.MIPS
 
@@ -1174,7 +1183,7 @@ class MipsArch(Arch):
             outputs = [args[0]]
             eval_fn = lambda s, a: s.set_reg(
                 a.reg_ref(0),
-                GteReadExpr(mnemonic="mfc0", reg=str(a.raw_arg(1)).lstrip("$"), type=Type.s32(), cop="COP0"),
+                _cop(a, GteReadExpr(mnemonic="mfc0", reg=str(a.raw_arg(1)).lstrip("$"), type=Type.s32(), cop="COP0")),
             )
         elif mnemonic == "mtc0":
             assert len(args) == 2 and isinstance(args[0], Register)
@@ -1195,7 +1204,7 @@ class MipsArch(Arch):
             # the same flag a function call uses, so an unused read still emits.
             eval_fn = lambda s, a, mn=mnemonic: s.set_reg_real(
                 a.reg_ref(0),
-                GteReadExpr(mnemonic=mn, reg=str(a.raw_arg(1)).lstrip("$"), type=Type.s32()),
+                _cop(a, GteReadExpr(mnemonic=mn, reg=str(a.raw_arg(1)).lstrip("$"), type=Type.s32())),
                 emit_exactly_once=True,
             )
         elif mnemonic == "swc2":
@@ -1211,9 +1220,9 @@ class MipsArch(Arch):
                 inputs.append(args[1].base)
 
             def eval_fn(s: NodeState, a: InstrArgs) -> None:
-                source_val = GteReadExpr(
+                source_val = _cop(a, GteReadExpr(
                     mnemonic="mfc2", reg=str(a.raw_arg(0)).lstrip("$"), type=Type.s32()
-                )
+                ))
                 store = make_store_real(
                     source_val,
                     None,
@@ -1233,11 +1242,11 @@ class MipsArch(Arch):
             inputs = [args[0]]
             eval_fn = lambda s, a, mn=mnemonic: s.write_statement(
                 ExprStmt(
-                    GteCallExpr(
+                    _cop(a, GteCallExpr(
                         mnemonic=mn,
                         args=(a.reg(0), str(a.raw_arg(1)).lstrip("$")),
                         type=Type.void(),
-                    )
+                    ))
                 )
             )
         elif mnemonic == "lwc2":
@@ -1254,14 +1263,14 @@ class MipsArch(Arch):
                 inputs.append(args[1].base)
             eval_fn = lambda s, a: s.write_statement(
                 ExprStmt(
-                    GteCallExpr(
+                    _cop(a, GteCallExpr(
                         mnemonic="lwc2",
                         args=(
                             str(a.raw_arg(0)).lstrip("$"),
                             deref(a.memory_ref(1), a.regs, a.stack_info, size=4),
                         ),
                         type=Type.void(),
-                    )
+                    ))
                 )
             )
         elif mnemonic in cls.instrs_cop2_op:
@@ -1273,7 +1282,7 @@ class MipsArch(Arch):
             eval_fn = lambda s, a, mn=mnemonic, ags=tuple(
                 str(x) for x in args
             ): s.write_statement(
-                ExprStmt(GteCallExpr(mnemonic=mn, args=ags, type=Type.void()))
+                ExprStmt(_cop(a, GteCallExpr(mnemonic=mn, args=ags, type=Type.void())))
             )
         elif mnemonic in cls.instrs_cop2_comment:
             inputs = [r for r in args if isinstance(r, Register)]

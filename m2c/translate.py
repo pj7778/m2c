@@ -1219,6 +1219,17 @@ class GteCallExpr(Expression):
         return f"{self.cop}_{self.mnemonic.upper()}({', '.join(parts)})"
 
 
+def cop_decl_for(expr: Expression) -> Tuple[str, str]:
+    """(name, prototype) for a synthesized COP intrinsic, so m2c can declare the
+    names it invents instead of leaving them to C89's implicit-declaration rule."""
+    name = f"{expr.cop}_{expr.mnemonic.upper()}"  # type: ignore[attr-defined]
+    if isinstance(expr, GteReadExpr):
+        return name, f"s32 {name}(s32);"
+    n = len(expr.args)  # type: ignore[attr-defined]
+    params = "void" if n == 0 else ", ".join(["s32"] * n)
+    return name, f"void {name}({params});"
+
+
 @dataclass(frozen=True, eq=False)
 class GteReadExpr(Expression):
     """Read from a COP register — emits GTE_MFC2(n), COP0_MFC0(n), etc."""
@@ -4929,6 +4940,14 @@ class GlobalInfo:
     stack_spill_detection: bool
     annotate: FrozenSet[str] = frozenset()
     alloc_container_fns: FrozenSet[str] = frozenset()
+    # COP intrinsics this function actually emitted, name -> declaration.
+    # m2c synthesizes these names (GTE_MFC2, GTE_RTPS, ...); nothing in any
+    # context defines them, and under C89 an undeclared call is merely an
+    # implicit declaration, so the output compiles clean and fails at link --
+    # or worse, silently, if some unrelated symbol matches. m2c already emits
+    # `/* extern */` prototypes for ordinary unknown callees; these were the
+    # one kind of call it invented and did not declare.
+    cop_intrinsics: Dict[str, str] = field(default_factory=dict)
     global_symbol_map: Dict[str, GlobalSymbol] = field(default_factory=dict)
     persistent_function_state: Dict[str, PersistentFunctionState] = field(
         default_factory=lambda: defaultdict(PersistentFunctionState)
@@ -5401,7 +5420,20 @@ class GlobalInfo:
                     )
                 )
         lines.sort()
-        return "".join(line for _, line in lines)
+        out = "".join(line for _, line in lines)
+        if self.cop_intrinsics:
+            # Declare the intrinsics we invented. Without this they are implicit
+            # declarations under C89 -- the output compiles clean and fails at
+            # link, which is the least useful place to find out. Emitting them
+            # also tells the reader exactly which names their project header has
+            # to define.
+            intr = "".join(
+                fmt.with_comments(d, ["m2c intrinsic; define it for your target"])
+                + "\n"
+                for _, d in sorted(self.cop_intrinsics.items())
+            )
+            out = intr + out
+        return out
 
 
 def narrow_func_call_outputs(
