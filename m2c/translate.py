@@ -549,8 +549,22 @@ class StackInfo:
         elif self.location_above_stack(location):
             offset = location - self.allocated_stack_size
             ret, arg = self.get_argument_above_stack(offset)
-            if not store:
-                self.add_argument(arg)
+            if store:
+                # `ret` carries a narrowing Cast for a sub-word offset, which is
+                # fine as an rvalue and INVALID as an assignment target -- a cast
+                # yields an rvalue, so `(u8) arg4 = arg17;` is not C. Use the raw
+                # argument as the destination and let the store's own type
+                # unification put the narrowing on the source side instead.
+                ret = arg
+            # Register the argument for a STORE as well as a load. A store to
+            # this region still renders as `argN` in the output, so skipping
+            # registration emits an identifier that is never declared -- gcc
+            # "'arg15' undeclared", six of them on King's Field FUN_80049480,
+            # which writes into its caller's home space. Whether such a slot is
+            # "really" a parameter is a judgement call (a callee may use home
+            # space as scratch), but referencing an undeclared name is not: if
+            # we are going to print `argN`, it has to be in the signature.
+            self.add_argument(arg)
             return ret
         elif self.in_subroutine_arg_region(location):
             return SubroutineArg(location, type=Type.any_reg())
