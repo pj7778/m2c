@@ -299,6 +299,28 @@ There is a small test suite, which works as follows:
 
 `./run_tests.py` additionally runs a handful of unit tests in `tests/unit/`.
 
+### Fork note — run the King's Field corpus oracle before pushing
+
+**This suite passing is not sufficient on the `tenchu` branch.** On 2026-07-16
+commit `7b480c5` shipped two switch bugs that survived a month with all 451
+tests green: one hard failure (the largest unclaimed function in the KF game
+EXE would not decompile at all) and one *silent* — 8 switch cases misrouted to
+`default:`, emitting plausible wrong C with no error. Neither was reachable by
+a hand-written fixture: the trigger needs a 1539-instruction function together
+with a 63KB typed context, and distilling it collapses the shape.
+
+The King's Field tree has an oracle over its 1299 carved functions that catches
+both in ~27s. Run it against your working tree before pushing:
+
+```sh
+cd ../../kingsfield
+just m2c-check          # 0 clean · 1 REGRESSION · 3 baseline stale (context moved)
+just m2c-vs-upstream    # this fork must never FAIL where upstream m2c succeeds
+```
+
+If output moved for a good reason, accept it *with that reason*:
+`just m2c-accept "<why>"`. See `kingsfield/tools/m2c_oracle.py`.
+
 ### Running Decompilation Project Tests
 
 It's possible to use the entire corpus of assembly files from decompilation projects as regression tests.
